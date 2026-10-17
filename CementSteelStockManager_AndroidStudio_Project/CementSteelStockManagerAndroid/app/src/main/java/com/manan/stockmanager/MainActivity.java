@@ -184,7 +184,7 @@ public class MainActivity extends Activity {
                 s.execSQL("INSERT INTO steel_moves(kind,qty,unit_cost,date,ref) VALUES('DELIVERY',?,?,?,?)",new Object[]{q,cost,dt,"Customer booking #"+id});
                 s.setTransactionSuccessful();
             }finally{s.endTransaction();}
-            toast("Delivery recorded. Estimated gross profit on this delivery: "+money((r-cost)*q));render();
+            toast("Delivery recorded. Estimated gross profit on this delivery: "+money((r-db.steelAvgCost())*q));render();
         }).show();
     }
 
