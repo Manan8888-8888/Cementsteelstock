@@ -24,7 +24,10 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
+        run: |
+          mkdir -p "$HOME/.android"
+          touch "$HOME/.android/repositories.cfg"
+          yes | sdkmanager --licenses || true
 
       - name: Install required Android SDK
         run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
