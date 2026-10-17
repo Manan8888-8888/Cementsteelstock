@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download project
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - name: Set up Java
@@ -20,11 +20,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Install Android SDK tools
         uses: android-actions/setup-android@v3
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses
+
+      - name: Install required Android SDK
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -35,7 +38,7 @@ jobs:
         working-directory: ./CementSteelStockManager_AndroidStudio_Project/CementSteelStockManagerAndroid
         run: gradle assembleDebug
 
-      - name: Save APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: CementSteelStockManager-APK
