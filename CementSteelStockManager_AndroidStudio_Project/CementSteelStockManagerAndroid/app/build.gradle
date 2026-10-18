@@ -6,7 +6,7 @@ android {
 
     packaging {
         resources {
-            excludes += ['META-INF/INDEX.LIST']
+            excludes += ['META-INF/INDEX.LIST', 'META-INF/DEPENDENCIES']
         }
     }
     namespace 'com.manan.stockmanager'
