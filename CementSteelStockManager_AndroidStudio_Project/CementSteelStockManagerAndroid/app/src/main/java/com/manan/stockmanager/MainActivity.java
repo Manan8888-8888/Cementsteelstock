@@ -4,12 +4,25 @@ import android.app.*;
 import android.os.Bundle;
 import android.graphics.Typeface;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.drawable.GradientDrawable;
 import android.view.*;
 import android.widget.*;
 import android.content.*;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.net.Uri;
+import android.os.ParcelFileDescriptor;
+import java.io.*;
+import androidx.work.WorkManager;
+import com.google.android.gms.auth.api.signin.GoogleSignIn;
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
+import com.google.android.gms.auth.api.signin.GoogleSignInClient;
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions;
+import com.google.android.gms.common.api.Scope;
+import com.google.api.services.drive.DriveScopes;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -21,31 +34,40 @@ public class MainActivity extends Activity {
     private final int ink = Color.rgb(28, 43, 61);
     private final int blue = Color.rgb(34, 96, 170);
     private final int pale = Color.rgb(239, 245, 251);
+    private final int teal = Color.rgb(19, 128, 116);
+    private final int bg = Color.rgb(244, 247, 250);
+    private String reportStart = "";
+    private String reportEnd = "";
+    private static final int REQUEST_BACKUP_EXPORT = 701;
+    private static final int REQUEST_BACKUP_RESTORE = 702;
+    private static final int REQUEST_DRIVE_SIGN_IN = 703;
+    private String pendingDriveAction = "";
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         db = new DB(this);
+        BackupScheduler.scheduleDailyLocalBackup(this);
         render();
     }
 
     private void render() {
         root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(247,249,252));
+        root.setBackgroundColor(bg);
         setContentView(root);
         LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(18), dp(18), dp(18), dp(14)); header.setBackgroundColor(ink);
-        TextView title = text("Cement & Steel Stock", 22, Color.WHITE, true);
-        TextView subtitle = text("Offline inventory • saved on this phone", 13, Color.rgb(210,223,239), false);
+        header.setPadding(dp(20), dp(22), dp(20), dp(18)); header.setBackground(roundRect(ink, 0, 0, 0, 0));
+        TextView title = text("SHYAM CO.", 23, Color.WHITE, true);
+        TextView subtitle = text("Cement & Steel Inventory  •  Offline-first", 13, Color.rgb(210,223,239), false);
         header.addView(title); header.addView(subtitle); root.addView(header);
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(14),dp(14),dp(14),dp(18)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
-        nav = new LinearLayout(this); nav.setPadding(dp(5),dp(5),dp(5),dp(5)); nav.setBackgroundColor(Color.WHITE);
+        nav = new LinearLayout(this); nav.setPadding(dp(8),dp(7),dp(8),dp(7)); nav.setBackground(roundRect(Color.WHITE, dp(18), 0, 0, 0));
         String[] tabs = {"Cement", "Steel", "Reports"};
         for (int i=0;i<tabs.length;i++) {
-            final int p=i; Button b=button(tabs[i], i==page?blue:ink);
-            b.setTextColor(Color.WHITE); nav.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));
+            final int p=i; Button b=button(tabs[i], i==page?blue:Color.rgb(229,235,242));
+            b.setTextColor(i==page?Color.WHITE:ink); b.setTextSize(13); nav.addView(b,new LinearLayout.LayoutParams(0,dp(46),1));
             b.setOnClickListener(v->{page=p;render();});
         }
         root.addView(nav);
@@ -143,7 +165,6 @@ public class MainActivity extends Activity {
             SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();
             try{
                 s.execSQL("UPDATE company_bookings SET dispatched=dispatched+? WHERE id=?",new Object[]{q,id});
-                double oldQ=db.steelQty(),oldV=db.steelValue();
                 s.execSQL("INSERT INTO steel_moves(kind,qty,unit_cost,date,ref) VALUES('RECEIPT',?,?,?,?)",new Object[]{q,r,dt,"Company booking #"+id});
                 s.setTransactionSuccessful();
             }finally{s.endTransaction();}
@@ -177,39 +198,208 @@ public class MainActivity extends Activity {
             Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,delivered,rate FROM customer_bookings WHERE id=?",new String[]{""+id});
             if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}double pending=b.getDouble(0)-b.getDouble(1),r=b.getDouble(2);b.close();
             if(q<=0||q>pending+0.000001||q>db.steelQty()+0.000001||!validDate(dt)){toast("Check quantity, stock, and date.");return;}
+            double cost=db.steelAvgCost();
             SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();
             try{
-                double cost=db.steelAvgCost();
                 s.execSQL("UPDATE customer_bookings SET delivered=delivered+? WHERE id=?",new Object[]{q,id});
                 s.execSQL("INSERT INTO steel_moves(kind,qty,unit_cost,date,ref) VALUES('DELIVERY',?,?,?,?)",new Object[]{q,cost,dt,"Customer booking #"+id});
                 s.setTransactionSuccessful();
             }finally{s.endTransaction();}
-            toast("Delivery recorded. Estimated gross profit on this delivery: "+money((r-db.steelAvgCost())*q));render();
+            toast("Delivery recorded. Estimated gross profit on this delivery: "+money((r-cost)*q));render();
         }).show();
     }
 
     private void reportsPage() {
-        heading("Reports");
-        section("Cement closing stock");
-        for(String t:cementTypes) row(t,fmt(db.cementStock(t))+" bags","");
-        section("Steel summary");
-        row("Physical stock",qtyText(db.steelQty()),"Average cost "+money(db.steelAvgCost())+"/t");
-        row("Reserved for customers",qtyText(db.customerPending()),"Available "+qtyText(Math.max(0,db.steelQty()-db.customerPending())));
-        row("Pending company bookings",qtyText(db.companyPending()),"Separate from physical stock");
-        section("Customer booking report • expected profit");
-        Cursor c=db.getReadableDatabase().rawQuery("SELECT customer,qty,delivered,rate,expected_profit,date FROM customer_bookings ORDER BY id DESC LIMIT 100",null);
-        if(!c.moveToFirst()) empty("No customer bookings yet.");
-        else do {
-            double remaining=c.getDouble(1)-c.getDouble(2);
-            row(c.getString(0), "Booked "+qtyText(c.getDouble(1))+" • delivered "+qtyText(c.getDouble(2)), "Expected profit "+money(c.getDouble(4))+" • "+c.getString(5));
-        }while(c.moveToNext()); c.close();
-        section("Recent steel movements");
-        Cursor m=db.getReadableDatabase().rawQuery("SELECT kind,qty,unit_cost,date,ref FROM steel_moves ORDER BY id DESC LIMIT 100",null);
-        if(!m.moveToFirst()) empty("No steel dispatches or deliveries recorded yet.");
+        heading("Reports & analytics");
+        TextView note=text("Review stock, bookings and movement history. Set a date range to filter transaction reports.",13,Color.DKGRAY,false);
+        content.addView(note);
+        section("Report period");
+        LinearLayout range=form();
+        EditText from=input("Start date YYYY-MM-DD"); from.setText(reportStart);
+        EditText to=input("End date YYYY-MM-DD"); to.setText(reportEnd);
+        addField(range,"From date (optional)",from); addField(range,"To date (optional)",to); content.addView(range);
+        Button apply=button("Apply date range",blue); content.addView(apply);
+        apply.setOnClickListener(v->{String a=from.getText().toString().trim(),b=to.getText().toString().trim();
+            if((!a.isEmpty()&&!validDate(a))||(!b.isEmpty()&&!validDate(b))||(!a.isEmpty()&&!b.isEmpty()&&a.compareTo(b)>0)){toast("Check the report dates. Use YYYY-MM-DD and make sure From is not after To.");return;}
+            reportStart=a;reportEnd=b;render();});
+        String filter=""; ArrayList<String> args=new ArrayList<>();
+        if(!reportStart.isEmpty()){filter+=" AND date>=?";args.add(reportStart);} if(!reportEnd.isEmpty()){filter+=" AND date<=?";args.add(reportEnd);}
+        section("Current stock snapshot");
+        for(String t:cementTypes) row(t,fmt(db.cementStock(t))+" bags","Current balance (all dates)");
+        row("Steel physically in stock",qtyText(db.steelQty()),"Weighted average cost "+money(db.steelAvgCost())+"/t");
+        row("Customer reservations",qtyText(db.customerPending()),"Available physical stock "+qtyText(Math.max(0,db.steelQty()-db.customerPending())));
+        row("Unfulfilled company bookings",qtyText(db.companyPending()),"Not counted as physical stock");
+        section("Steel stock movement chart");
+        content.addView(new StockChart(this, db));
+        section("Customer bookings in selected period");
+        Cursor c=db.getReadableDatabase().rawQuery("SELECT customer,qty,delivered,rate,expected_profit,date FROM customer_bookings WHERE 1=1"+filter+" ORDER BY date DESC,id DESC LIMIT 200",args.toArray(new String[0]));
+        if(!c.moveToFirst()) empty("No customer bookings in this period.");
+        else do {row(c.getString(0),"Booked "+qtyText(c.getDouble(1))+" • delivered "+qtyText(c.getDouble(2)),"Expected gross profit "+money(c.getDouble(4))+" • "+c.getString(5));}while(c.moveToNext()); c.close();
+        section("Steel movements in selected period");
+        Cursor m=db.getReadableDatabase().rawQuery("SELECT kind,qty,unit_cost,date,ref FROM steel_moves WHERE 1=1"+filter+" ORDER BY date DESC,id DESC LIMIT 200",args.toArray(new String[0]));
+        if(!m.moveToFirst()) empty("No steel movements in this period.");
         else do {row(m.getString(0)+" • "+m.getString(4),qtyText(m.getDouble(1)),"Rate/cost "+money(m.getDouble(2))+"/t • "+m.getString(3));}while(m.moveToNext());m.close();
-        section("Data");
+        section("Cement movements in selected period");
+        Cursor cm=db.getReadableDatabase().rawQuery("SELECT type,kind,qty,date FROM cement_moves WHERE 1=1"+filter+" ORDER BY date DESC,id DESC LIMIT 200",args.toArray(new String[0]));
+        if(!cm.moveToFirst()) empty("No cement movements in this period.");
+        else do {row(cm.getString(0)+" • "+cm.getString(1),fmt(cm.getDouble(2))+" bags",cm.getString(3));}while(cm.moveToNext());cm.close();
+        section("Backup & Restore");
+        content.addView(text("Use the SAME Google account email every time. The saved email must match the Google account you authorize for Drive access. The app will ask you to sign in when you back up or restore.",13,Color.DKGRAY,false));
+        EditText backupEmail=input("Google account email (example@gmail.com)");
+        backupEmail.setSingleLine(true);
+        backupEmail.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        backupEmail.setText(getBackupEmail());
+        content.addView(label("Email to use for backup and future restore")); content.addView(backupEmail);
+        Button saveEmail=button("Save backup email",blue); content.addView(saveEmail);
+        saveEmail.setOnClickListener(v->{String e=backupEmail.getText().toString().trim();if(!android.util.Patterns.EMAIL_ADDRESS.matcher(e).matches()){toast("Enter a valid email address.");return;}getSharedPreferences("backup_settings",MODE_PRIVATE).edit().putString("backup_email",e).apply();toast("Backup email saved. Use this same account in Drive.");});
+        Button backup=button("Backup to Google Drive",teal), restore=button("Restore from Google Drive",ink), help=button("How to restore on a new/lost-device replacement",blue);
+        content.addView(backup); content.addView(restore); content.addView(help);
+        backup.setOnClickListener(v->{String e=backupEmail.getText().toString().trim();if(!saveAndValidateBackupEmail(e))return;beginDriveAction("upload");});
+        restore.setOnClickListener(v->{String e=backupEmail.getText().toString().trim();if(!saveAndValidateBackupEmail(e))return;new AlertDialog.Builder(this).setTitle("Restore backup?").setMessage("Restore the latest Shyam Co. backup from Google Drive account "+e+"? This replaces current inventory records. A safety copy of the current database will be kept on this phone.").setNegativeButton("Cancel",null).setPositiveButton("Continue",(d,w)->beginDriveAction("restore")).show();});
+        help.setOnClickListener(v->showRestoreGuidelines());
+        File latest=BackupScheduler.latestLocalBackup(this);
+        row("Automatic local backup",latest==null?"Not created yet":"Available",latest==null?"A daily local copy is scheduled around 9–10 PM":"Last local copy: "+new SimpleDateFormat("yyyy-MM-dd HH:mm",Locale.getDefault()).format(new Date(latest.lastModified())));
         Button info=button("About offline storage",ink);content.addView(info);
-        info.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Your data").setMessage("Records are saved in this app's local database on this phone. They do not sync to another phone. Uninstalling the app or clearing its storage can delete the records.").setPositiveButton("OK",null).show());
+        info.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Your data").setMessage("Transactions remain stored locally on this phone. After you save the backup email and authorize that same Google account for Drive access once, the app can upload the latest database to Drive during its daily scheduled backup when internet is available. You can also upload manually at any time. Restore downloads the latest app backup from that account. Keep the Google account secure and verify backups periodically.").setPositiveButton("OK",null).show());
+    }
+
+    private class StockChart extends View {
+        private final Paint paint=new Paint(3); private final DB data;
+        StockChart(Context c, DB d){super(c);data=d;setMinimumHeight(dp(180));setBackground(roundRect(Color.WHITE,dp(18),dp(1),Color.rgb(226,232,240),dp(18)));setPadding(dp(12),dp(12),dp(12),dp(12));}
+        @Override protected void onDraw(Canvas canvas){super.onDraw(canvas);float left=dp(22),right=getWidth()-dp(18),top=dp(18),bottom=getHeight()-dp(36);if(right<=left||bottom<=top)return;
+            paint.setColor(Color.rgb(226,232,240));paint.setStrokeWidth(dp(1));for(int i=0;i<4;i++){float y=top+(bottom-top)*i/3f;canvas.drawLine(left,y,right,y,paint);}
+            String[] labels={"Opening","Receipts","Deliveries","Current"};double opening=0,receipts=0,deliveries=0;
+            Cursor c=data.getReadableDatabase().rawQuery("SELECT kind,qty FROM steel_moves",null);while(c.moveToNext()){String k=c.getString(0);if("RECEIPT".equals(k))receipts+=c.getDouble(1);else if("DELIVERY".equals(k))deliveries+=c.getDouble(1);}c.close();
+            double[] vals={opening,receipts,deliveries,data.steelQty()};double max=1;for(double v:vals)max=Math.max(max,v);float slot=(right-left)/4f,bar=slot*.48f;
+            for(int i=0;i<vals.length;i++){float h=(float)(vals[i]/max)*(bottom-top);float x=left+i*slot+(slot-bar)/2;paint.setColor(i==3?teal:blue);canvas.drawRoundRect(x,bottom-h,x+bar,bottom,dp(5),dp(5),paint);paint.setColor(ink);paint.setTextSize(dp(10));paint.setTextAlign(Paint.Align.CENTER);canvas.drawText(labels[i],x+bar/2,bottom+dp(17),paint);paint.setTextSize(dp(9));canvas.drawText(String.format(Locale.US,"%.2f",vals[i]),x+bar/2,Math.max(top+dp(10),bottom-h-dp(5)),paint);}
+        }
+    }
+
+    private String getBackupEmail() { return getSharedPreferences("backup_settings",MODE_PRIVATE).getString("backup_email",""); }
+    private boolean saveAndValidateBackupEmail(String email) {
+        if(!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            new AlertDialog.Builder(this).setTitle("Backup email required")
+                .setMessage("Enter and save a valid email address in Backup & Restore before continuing. Always use the same Google account for future restore.")
+                .setPositiveButton("OK",null).show(); return false;
+        }
+        getSharedPreferences("backup_settings",MODE_PRIVATE).edit().putString("backup_email",email).apply();
+        return true;
+    }
+    private void showRestoreGuidelines() {
+        String email=getBackupEmail();
+        String message="Saved backup email: "+(email.isEmpty()?"Not set":email)+"\n\nIf this phone is lost or replaced:\n1. Install Shyam Co. on the new Android phone.\n2. Make sure you can sign in to the SAME Google account: "+(email.isEmpty()?"(set your backup email first)":email)+".\n3. Open Reports > Backup & Restore and enter/save that same email.\n4. Tap Restore from Google Drive and approve Google Drive access for the app.\n5. The app downloads the latest ShyamCo_Backup.db from that account and restores it.\n6. Check cement stock, steel stock, bookings and reports.\n\nUse Backup to Google Drive regularly. The app updates its named backup file in Drive rather than making a new file each time. Scheduled local backups are separate; automatic cloud uploads need a previously authorized Google account and may require you to sign in again after security changes.";
+        new AlertDialog.Builder(this).setTitle("Restore on a new device").setMessage(message).setPositiveButton("OK",null).show();
+    }
+
+    private void startBackupExport() {
+        if(!saveAndValidateBackupEmail(getBackupEmail())) return;
+        try {
+            db.getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(FULL)", null).close();
+        } catch(Exception ignored) {}
+        Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("application/octet-stream");
+        i.putExtra(Intent.EXTRA_TITLE,"ShyamCo_Backup.db");
+        startActivityForResult(i,REQUEST_BACKUP_EXPORT);
+    }
+
+    private void startBackupRestore() {
+        if(!saveAndValidateBackupEmail(getBackupEmail())) return;
+        new AlertDialog.Builder(this).setTitle("Restore backup?")
+            .setMessage("Use Google Drive signed in with this saved email: "+getBackupEmail()+". Restoring replaces the current inventory database on this phone. First, make a backup of current data if needed. Continue?")
+            .setNegativeButton("Cancel",null).setPositiveButton("Choose backup",(d,w)->{
+                Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*"); startActivityForResult(i,REQUEST_BACKUP_RESTORE);
+            }).show();
+    }
+
+    private void beginDriveAction(String action) {
+        pendingDriveAction = action;
+        GoogleSignInAccount existing = GoogleSignIn.getLastSignedInAccount(this);
+        String wanted = getBackupEmail();
+        if(existing != null && existing.getEmail()!=null && existing.getEmail().equalsIgnoreCase(wanted)
+                && GoogleSignIn.hasPermissions(existing, new Scope(DriveScopes.DRIVE_FILE))) {
+            runDriveAction(action, wanted); return;
+        }
+        GoogleSignInOptions options = new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+                .requestEmail().requestScopes(new Scope(DriveScopes.DRIVE_FILE)).build();
+        GoogleSignInClient client = GoogleSignIn.getClient(this, options);
+        startActivityForResult(client.getSignInIntent(), REQUEST_DRIVE_SIGN_IN);
+    }
+
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
+        super.onActivityResult(requestCode,resultCode,data);
+        if(requestCode==REQUEST_DRIVE_SIGN_IN) {
+            if(resultCode!=RESULT_OK || data==null) { toast("Google sign-in cancelled. No backup changes were made."); return; }
+            try {
+                GoogleSignInAccount account=GoogleSignIn.getSignedInAccountFromIntent(data).getResult(com.google.android.gms.common.api.ApiException.class);
+                String wanted=getBackupEmail();
+                if(account==null || account.getEmail()==null || !account.getEmail().equalsIgnoreCase(wanted)) {
+                    toast("Please choose the exact Google account saved in Backup & Restore: "+wanted); return;
+                }
+                runDriveAction(pendingDriveAction,wanted);
+            } catch(Exception e) { toast("Google sign-in failed: "+e.getMessage()); }
+            return;
+        }
+        if(resultCode!=RESULT_OK || data==null || data.getData()==null) return;
+        Uri uri=data.getData();
+        if(requestCode==REQUEST_BACKUP_EXPORT) exportDatabase(uri);
+        else if(requestCode==REQUEST_BACKUP_RESTORE) restoreDatabase(uri);
+    }
+
+    private void runDriveAction(String action, String email) {
+        if("restore".equals(action)) { try { db.close(); } catch(Exception ignored) {} }
+        new Thread(() -> {
+            try {
+                if("upload".equals(action)) DriveBackupManager.upload(this,email);
+                else if("restore".equals(action)) DriveBackupManager.download(this,email);
+                runOnUiThread(() -> {
+                    if("upload".equals(action)) toast("Google Drive backup completed for "+email);
+                    else { try { db.close(); db=new DB(this); db.getWritableDatabase(); render(); toast("Google Drive backup restored successfully."); } catch(Exception e) { toast("Restored; reopen the app if totals do not refresh."); } }
+                });
+            } catch(Exception e) { runOnUiThread(() -> { try { db=new DB(this); db.getWritableDatabase(); } catch(Exception ignored) {} toast("Drive backup/restore failed: "+e.getMessage()+". Check internet, account permissions, and Google Cloud OAuth setup."); }); }
+        }).start();
+    }
+
+    private void exportDatabase(Uri uri) {
+        File source=getDatabasePath("stock_manager.db");
+        try {
+            db.getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(FULL)", null).close();
+            try(InputStream in=new FileInputStream(source); OutputStream out=getContentResolver().openOutputStream(uri,"wt")) {
+                if(out==null) throw new IOException("Could not open selected destination");
+                byte[] buf=new byte[8192]; int n; while((n=in.read(buf))>0) out.write(buf,0,n); out.flush();
+            }
+            toast("Backup exported. If you selected Google Drive, it is saved there.");
+        } catch(Exception e) { toast("Backup failed: "+e.getMessage()); }
+    }
+
+    private void restoreDatabase(Uri uri) {
+        File temp=new File(getCacheDir(),"restore-check.db");
+        try {
+            try(InputStream in=getContentResolver().openInputStream(uri); OutputStream out=new FileOutputStream(temp)) {
+                if(in==null) throw new IOException("Could not open backup file");
+                byte[] buf=new byte[8192]; int n; while((n=in.read(buf))>0) out.write(buf,0,n);
+            }
+            SQLiteDatabase check=SQLiteDatabase.openDatabase(temp.getAbsolutePath(),null,SQLiteDatabase.OPEN_READONLY);
+            Cursor c=check.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('cement_moves','company_bookings','customer_bookings','steel_moves')",null);
+            int found=0; while(c.moveToNext()) found++; c.close(); check.close();
+            if(found<4) throw new IOException("This file is not a complete Shyam Co. database backup");
+            File source=getDatabasePath("stock_manager.db");
+            db.close();
+            File backupSafety=new File(getFilesDir(),"pre_restore_backup.db");
+            if(source.exists()) copyFile(source,backupSafety);
+            copyFile(temp,source);
+            db=new DB(this); db.getWritableDatabase();
+            toast("Backup restored successfully."); render();
+        } catch(Exception e) {
+            try { db=new DB(this); db.getWritableDatabase(); } catch(Exception ignored) {}
+            toast("Restore failed: "+e.getMessage());
+        } finally { if(temp.exists()) temp.delete(); }
+    }
+
+    private void copyFile(File from,File to) throws IOException {
+        try(InputStream in=new FileInputStream(from); OutputStream out=new FileOutputStream(to)) {
+            byte[] buf=new byte[8192]; int n; while((n=in.read(buf))>0) out.write(buf,0,n); out.flush();
+        }
     }
 
     private class DB extends SQLiteOpenHelper {
@@ -232,22 +422,23 @@ public class MainActivity extends Activity {
         double customerPending(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty-delivered),0) FROM customer_bookings",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
     }
 
-    private void heading(String s){TextView t=text(s,21,ink,true);t.setPadding(0,0,0,dp(8));content.addView(t);}
+    private void heading(String s){TextView t=text(s,23,ink,true);t.setPadding(dp(2),dp(3),0,dp(10));content.addView(t);}
     private void section(String s){TextView t=text(s,16,ink,true);t.setPadding(0,dp(17),0,dp(7));content.addView(t);}
     private void card(String title,String value,String detail){
-        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(14),dp(12),dp(14),dp(12));box.setBackgroundColor(Color.WHITE);
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(14),dp(12),dp(14),dp(12));box.setBackground(roundRect(Color.WHITE,dp(16),dp(1),Color.rgb(232,237,243),dp(16)));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(8);box.setLayoutParams(lp);
         box.addView(text(title,14,Color.DKGRAY,true));box.addView(text(value,20,ink,true));box.addView(text(detail,12,Color.GRAY,false));content.addView(box);
     }
     private void row(String title,String value,String detail){
-        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(10),dp(12),dp(10));box.setBackgroundColor(Color.WHITE);
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(10),dp(12),dp(10));box.setBackground(roundRect(Color.WHITE,dp(16),dp(1),Color.rgb(232,237,243),dp(16)));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(5);box.setLayoutParams(lp);
         LinearLayout line=new LinearLayout(this);line.setOrientation(LinearLayout.HORIZONTAL);
         TextView a=text(title,14,ink,true),b=text(value,14,blue,true);line.addView(a,new LinearLayout.LayoutParams(0,-2,1));line.addView(b);
         box.addView(line);if(detail!=null&&!detail.isEmpty())box.addView(text(detail,12,Color.GRAY,false));content.addView(box);
     }
     private void empty(String s){TextView t=text(s,13,Color.GRAY,false);t.setPadding(dp(5),dp(8),dp(5),dp(8));content.addView(t);}
-    private Button button(String s,int color){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextColor(Color.WHITE);b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(color));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(48));lp.bottomMargin=dp(7);b.setLayoutParams(lp);return b;}
+    private Button button(String s,int color){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextColor(Color.WHITE);b.setTextSize(14);b.setTypeface(null,Typeface.BOLD);b.setPadding(dp(14),0,dp(14),0);b.setBackground(roundRect(color,dp(14),0,color,dp(14)));if(android.os.Build.VERSION.SDK_INT>=21)b.setStateListAnimator(null);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(50));lp.bottomMargin=dp(8);b.setLayoutParams(lp);return b;}
+    private GradientDrawable roundRect(int color,int radius,int strokeWidth,int strokeColor,int allRadius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(Math.max(radius,allRadius));if(strokeWidth>0)d.setStroke(strokeWidth,strokeColor);return d;}
     private TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
     private LinearLayout form(){LinearLayout f=new LinearLayout(this);f.setOrientation(LinearLayout.VERTICAL);f.setPadding(dp(18),dp(6),dp(18),0);return f;}
     private EditText input(String hint){EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(16);e.setHint(hint);return e;}
