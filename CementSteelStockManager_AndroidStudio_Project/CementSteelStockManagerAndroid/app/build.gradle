@@ -3,6 +3,12 @@ plugins {
 }
 
 android {
+
+    packaging {
+        resources {
+            excludes += ['META-INF/INDEX.LIST']
+        }
+    }
     namespace 'com.manan.stockmanager'
     compileSdk 35
 
