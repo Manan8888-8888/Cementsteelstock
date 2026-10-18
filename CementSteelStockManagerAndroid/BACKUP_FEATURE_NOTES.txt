@@ -1,0 +1,25 @@
+SHYAM CO. — GOOGLE DRIVE BACKUP / RESTORE
+
+Included in this source update:
+- User-supplied backup email saved in app preferences and required before cloud actions.
+- Google Sign-In with Drive file access; selected account must match the saved email.
+- Manual upload to Google Drive and restore of the latest ShyamCo_Backup.db.
+- Updates the app's named Drive backup rather than creating a new backup each time (if that file already exists).
+- Restore validates the database tables and saves a local pre-restore safety copy.
+- Daily local backup remains separate; a daily connected-network Drive worker attempts upload after Drive authorization has been granted.
+- If network is unavailable, WorkManager waits for a connected network; failed upload retries.
+
+REQUIRED GOOGLE CLOUD SETUP BEFORE REAL DEVICE USE:
+1. Create/select a project in Google Cloud Console.
+2. Enable Google Drive API.
+3. Configure OAuth consent screen and add test users if the app is in testing.
+4. Create an Android OAuth client for application ID com.manan.stockmanager using the SHA-1 signing certificate of the installed build (debug and release SHA-1s differ).
+5. Ensure Google Play services and Google account are available on the device.
+6. Build, install, sign in with the configured Google account, and grant Drive access once. The email field is not authentication by itself.
+
+NOTES / LIMITATIONS:
+- Cloud OAuth cannot work until the Google Cloud project is configured for the package and signing certificate.
+- The daily Drive worker only uploads after a successful in-app Google authorization for the saved account. If account permissions are revoked, sign in again through Backup & Restore.
+- WorkManager is best-effort; Android battery policies can delay the scheduled job. Manual Backup to Google Drive remains available.
+- This project source has not been compiled or device-tested in this environment because Gradle/Android SDK are not installed here.
+- Never treat the email address alone as a backup. Confirm a successful Drive backup message and periodically test restore.
