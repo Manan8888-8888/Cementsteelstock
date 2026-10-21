@@ -30,18 +30,25 @@ public class MainActivity extends Activity {
     private DB db;
     private LinearLayout root, content, nav;
     private int page = 0;
+    private int selectedCompanyId = -1;
     private final String[] cementTypes = {"OPC", "PPC", "SUPER", "WEATHER PLUS"};
-    private final int ink = Color.rgb(28, 43, 61);
-    private final int blue = Color.rgb(34, 96, 170);
-    private final int pale = Color.rgb(239, 245, 251);
-    private final int teal = Color.rgb(19, 128, 116);
-    private final int bg = Color.rgb(244, 247, 250);
+    private final int ink = Color.rgb(232, 235, 240);
+    private final int blue = Color.rgb(75, 125, 205);
+    private final int pale = Color.rgb(43, 46, 53);
+    private final int teal = Color.rgb(45, 155, 135);
+    private final int bg = Color.rgb(24, 26, 30);
+    private final int surface = Color.rgb(42, 45, 52);
+    private final int secondaryText = Color.rgb(177, 183, 193);
+    private final int outline = Color.rgb(61, 65, 74);
     private String reportStart = "";
     private String reportEnd = "";
+    private String cementViewDate = "";
+    private static final int REQUEST_CEMENT_REPORT_EXPORT = 704;
     private static final int REQUEST_BACKUP_EXPORT = 701;
     private static final int REQUEST_BACKUP_RESTORE = 702;
     private static final int REQUEST_DRIVE_SIGN_IN = 703;
     private String pendingDriveAction = "";
+    private boolean recentCementExpanded = false;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -53,22 +60,51 @@ public class MainActivity extends Activity {
     private void render() {
         root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(bg);
+
+        // Adapt to gesture navigation and three-button navigation without forcing
+        // a fixed navigation style or fullscreen mode on any phone.
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            getWindow().setStatusBarColor(bg);
+            getWindow().setNavigationBarColor(bg);
+            root.setFitsSystemWindows(false);
+            root.setOnApplyWindowInsetsListener((view, insets) -> {
+                int top = insets.getSystemWindowInsetTop();
+                int bottom = insets.getSystemWindowInsetBottom();
+                view.setPadding(view.getPaddingLeft(), top, view.getPaddingRight(), bottom);
+                return insets;
+            });
+        }
+
         setContentView(root);
         LinearLayout header = new LinearLayout(this); header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(20), dp(22), dp(20), dp(18)); header.setBackground(roundRect(ink, 0, 0, 0, 0));
+        header.setPadding(dp(20), dp(22), dp(20), dp(18)); header.setBackground(roundRect(surface, 0, 0, 0, 0));
         TextView title = text("SHYAM CO.", 23, Color.WHITE, true);
-        TextView subtitle = text("Cement & Steel Inventory  •  Offline-first", 13, Color.rgb(210,223,239), false);
+        TextView subtitle = text("Cement & Steel Inventory  •  Offline-first", 13, secondaryText, false);
         header.addView(title); header.addView(subtitle); root.addView(header);
         ScrollView scroll = new ScrollView(this);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(14),dp(14),dp(14),dp(18)); scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1,0,1));
-        nav = new LinearLayout(this); nav.setPadding(dp(8),dp(7),dp(8),dp(7)); nav.setBackground(roundRect(Color.WHITE, dp(18), 0, 0, 0));
+        nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        nav.setGravity(Gravity.CENTER);
+        nav.setPadding(dp(6), dp(5), dp(6), dp(5));
+        nav.setBackground(roundRect(surface, dp(14), dp(1), outline, dp(14)));
         String[] tabs = {"Cement", "Steel", "Reports"};
         for (int i=0;i<tabs.length;i++) {
-            final int p=i; Button b=button(tabs[i], i==page?blue:Color.rgb(229,235,242));
-            b.setTextColor(i==page?Color.WHITE:ink); b.setTextSize(13); nav.addView(b,new LinearLayout.LayoutParams(0,dp(46),1));
-            b.setOnClickListener(v->{page=p;render();});
+            final int p=i;
+            Button b=button(tabs[i], i==page ? blue : surface);
+            b.setTextColor(ink);
+            b.setTextSize(13);
+            b.setMinWidth(0);
+            b.setMinimumWidth(0);
+            b.setPadding(dp(2), 0, dp(2), 0);
+            b.setContentDescription(tabs[i] + (i==page ? ", selected tab" : ", tab"));
+            LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(0, dp(48), 1);
+            tabLp.setMargins(dp(3), 0, dp(3), 0);
+            nav.addView(b, tabLp);
+            b.setOnClickListener(v->{page=p;selectedCompanyId=-1;render();});
         }
         root.addView(nav);
         if(page==0) cementPage(); else if(page==1) steelPage(); else reportsPage();
@@ -76,159 +112,567 @@ public class MainActivity extends Activity {
 
     private void cementPage() {
         heading("Cement inventory");
-        TextView note=text("Stock is counted in bags. No payment tracking.",13,Color.DKGRAY,false); content.addView(note);
         for(String type:cementTypes) {
-            double stock=db.cementStock(type);
-            card(type, String.format(Locale.US,"%.0f bags available",stock), "Opening + received − sales");
+            double stock=db.cementStockAt(type,today());
+            card(type, String.format(Locale.US,"%.0f bags available",stock), "");
         }
+
+        // Keep recording actions near the top so daily entry is quick.
         section("Record a movement");
         Button opening=button("Add opening stock",blue), received=button("Receive stock",blue), sale=button("Record sale",ink);
         content.addView(opening); content.addView(received); content.addView(sale);
         opening.setOnClickListener(v->cementMovement("OPENING"));
         received.setOnClickListener(v->cementMovement("RECEIVED"));
         sale.setOnClickListener(v->cementMovement("SALE"));
+
+        section("Check stock on a date");
+        if(cementViewDate.isEmpty()) cementViewDate=today();
+        EditText selectedDate=dateInput(cementViewDate,false);
+        addField(content,"Select date",selectedDate);
+        Button viewDate=button("View stock for selected date",blue); content.addView(viewDate);
+        viewDate.setOnClickListener(v->{String dt=selectedDate.getText().toString().trim();if(!validDate(dt)){toast("Choose a valid date.");return;}String start=db.cementStartDate();if(start.isEmpty()||dt.compareTo(start)<0){toast(start.isEmpty()?"Enter opening stock first.":"Stock records begin on "+start+". Earlier dates are unavailable.");return;}cementViewDate=dt;render();});
+        String chosen=cementViewDate.isEmpty()?today():cementViewDate;
+        String recordStart=db.cementStartDate();
+        if(!recordStart.isEmpty()&&chosen.compareTo(recordStart)>=0){
+            section("Stock on "+chosen);
+            for(String type:cementTypes){double stock=db.cementStockAt(type,chosen);double purchases=db.cementPeriodQty(type,"RECEIVED",chosen,chosen);double sales=db.cementPeriodQty(type,"SALE",chosen,chosen);double openingStock=stock-purchases+sales;
+                card(type,fmt(stock)+" bags available", "Opening: "+fmt(openingStock)+" • Purchase: "+fmt(purchases)+" • Sale: "+fmt(sales));}
+        } else if(recordStart.isEmpty()) empty("Enter opening stock to start your cement records.");
+        else empty("Stock records begin on "+recordStart+". Select that date or a later date.");
+
         section("Recent cement movements");
-        Cursor c=db.getReadableDatabase().rawQuery("SELECT type,kind,qty,date FROM cement_moves ORDER BY id DESC LIMIT 30",null);
-        if(!c.moveToFirst()) empty("No cement movements recorded yet.");
-        else do { row(c.getString(0)+" • "+c.getString(1), fmt(c.getDouble(2))+" bags", c.getString(3)); } while(c.moveToNext());
-        c.close();
+        Button toggle=button(recentCementExpanded?"Hide recent movements":"Show recent movements",ink);
+        content.addView(toggle);
+        toggle.setOnClickListener(v->{recentCementExpanded=!recentCementExpanded;render();});
+        if(recentCementExpanded) {
+            Cursor c=db.getReadableDatabase().rawQuery("SELECT id,type,kind,qty,date FROM cement_moves ORDER BY date DESC,id DESC LIMIT 30",null);
+            if(!c.moveToFirst()) empty("No cement movements recorded yet.");
+            else do {
+                int movementId=c.getInt(0);
+                row(c.getString(1)+" • "+cementKindLabel(c.getString(2)), fmt(c.getDouble(3))+" bags", c.getString(4));
+                Button edit=button("Edit / Delete movement #"+movementId,ink);
+                content.addView(edit);
+                edit.setOnClickListener(v->editDeleteCementMovement(movementId));
+            } while(c.moveToNext());
+            c.close();
+        }
     }
 
     private void cementMovement(String kind) {
         LinearLayout form=form();
         Spinner types=spinner(cementTypes); form.addView(label("Cement type")); form.addView(types);
         EditText qty=input("Quantity in bags (whole number)"); form.addView(label("Quantity (bags)")); form.addView(qty);
-        EditText date=input(today()); form.addView(label("Date (YYYY-MM-DD)")); form.addView(date);
+        EditText date=dateInput(today(), false); form.addView(label("Date (tap to choose)")); form.addView(date);
         new AlertDialog.Builder(this).setTitle(cementTitle(kind)).setView(form)
             .setNegativeButton("Cancel",null).setPositiveButton("Save", (d,w)->{
                 String type=types.getSelectedItem().toString(); double q=parse(qty.getText().toString());
                 String dt=date.getText().toString().trim();
                 if(q<=0 || q!=Math.floor(q)){toast("Enter a positive whole number of bags.");return;}
-                if(kind.equals("SALE") && q>db.cementStock(type)){toast("Sale exceeds available stock.");return;}
                 if(!validDate(dt)){toast("Use date format YYYY-MM-DD.");return;}
+                String start=db.cementStartDate();
+                if(kind.equals("OPENING")) {
+                    if(db.hasOpening(type,-1)){toast("Opening stock for "+type+" has already been entered. Edit that entry instead.");return;}
+                    String openingDate=db.cementOpeningDate();
+                    if(!openingDate.isEmpty()&&!dt.equals(openingDate)){toast("All four opening stocks must use the same starting date: "+openingDate+".");return;}
+                    if(openingDate.isEmpty()) {
+                        String firstMovement=db.cementEarliestMovementDate();
+                        if(!firstMovement.isEmpty()&&dt.compareTo(firstMovement)>0){toast("Initial opening stock must be dated on or before your earliest existing cement movement: "+firstMovement+".");return;}
+                    }
+                } else if(!start.isEmpty()&&dt.compareTo(start)<0) {
+                    toast("Stock records begin on "+start+". Earlier dates are unavailable.");return;
+                }
+                if(kind.equals("SALE") && q>db.cementStockAt(type,dt)+0.000001){toast("Sale exceeds cement stock available on "+dt+".");return;}
                 db.getWritableDatabase().execSQL("INSERT INTO cement_moves(type,kind,qty,date) VALUES(?,?,?,?)",new Object[]{type,kind,q,dt});
                 toast("Cement movement saved."); render();
             }).show();
     }
     private String cementTitle(String k){return k.equals("OPENING")?"Opening stock":k.equals("RECEIVED")?"Receive cement":"Record cement sale";}
 
+    private String cementKindLabel(String kind) {
+        if("OPENING".equals(kind)) return "Opening stock";
+        if("RECEIVED".equals(kind)) return "Purchase";
+        if("SALE".equals(kind)) return "Sale";
+        return kind==null?"Movement":kind;
+    }
+    private String cementKindFromLabel(String label) {
+        if("Opening stock".equals(label)) return "OPENING";
+        if("Purchase / receipt".equals(label)) return "RECEIVED";
+        return "SALE";
+    }
+    private void editDeleteCementMovement(int movementId) {
+        Cursor c=db.getReadableDatabase().rawQuery("SELECT type,kind,qty,date FROM cement_moves WHERE id=?",new String[]{String.valueOf(movementId)});
+        if(!c.moveToFirst()){c.close();toast("Cement movement not found.");return;}
+        String oldType=c.getString(0),oldKind=c.getString(1),oldDate=c.getString(3);double oldQty=c.getDouble(2);c.close();
+        LinearLayout f=form();
+        Spinner types=spinner(cementTypes);for(int i=0;i<cementTypes.length;i++)if(cementTypes[i].equals(oldType))types.setSelection(i);
+        String[] kindLabels={"Opening stock","Purchase / receipt","Sale"};Spinner kinds=spinner(kindLabels);
+        for(int i=0;i<kindLabels.length;i++)if(cementKindFromLabel(kindLabels[i]).equals(oldKind))kinds.setSelection(i);
+        EditText qty=input("Quantity in bags (whole number)");qty.setText(fmt(oldQty));
+        EditText date=dateInput(oldDate,false);
+        if("OPENING".equals(oldKind)) date.setEnabled(false);
+        addField(f,"Cement type",types);addField(f,"Movement type",kinds);addField(f,"Quantity (bags)",qty);
+        addField(f,"Date"+("OPENING".equals(oldKind)?" (fixed for opening stock)":""),date);
+        new AlertDialog.Builder(this).setTitle("Edit cement movement #"+movementId).setView(f)
+            .setNegativeButton("Cancel",null)
+            .setNeutralButton("Delete",(d,w)->confirmDeleteCementMovement(movementId,oldType,oldKind,oldDate))
+            .setPositiveButton("Save changes",(d,w)->{
+                String newType=types.getSelectedItem().toString();String newKind=cementKindFromLabel(kinds.getSelectedItem().toString());
+                double newQty=parse(qty.getText().toString());String newDate=date.getText().toString().trim();
+                if(newQty<=0||newQty!=Math.floor(newQty)||!validDate(newDate)){toast("Enter a positive whole number of bags and a valid date.");return;}
+                if("OPENING".equals(oldKind)&&!"OPENING".equals(newKind)){toast("To preserve the initial stock date, an opening-stock entry cannot be changed into a purchase or sale. Delete it only if it was entered by mistake.");return;}
+                String start=db.cementStartDate();
+                if("OPENING".equals(newKind)) {
+                    if(db.hasOpening(newType,movementId)){toast("Opening stock for "+newType+" already exists.");return;}
+                    if(!start.isEmpty()&&!newDate.equals(start)){toast("All opening stocks must use the same starting date: "+start+".");return;}
+                } else if(!start.isEmpty()&&newDate.compareTo(start)<0) {toast("Stock records begin on "+start+". Earlier dates are unavailable.");return;}
+                if("SALE".equals(newKind)&&newQty>db.cementStockAtExcluding(newType,newDate,movementId)+0.000001){toast("Sale exceeds stock available on "+newDate+" after excluding this transaction.");return;}
+                SQLiteDatabase sql=db.getWritableDatabase();
+                sql.execSQL("UPDATE cement_moves SET type=?,kind=?,qty=?,date=? WHERE id=?",new Object[]{newType,newKind,newQty,newDate,movementId});
+                toast("Cement movement updated. Stock balances and reports have been recalculated.");render();
+            }).show();
+    }
+    private void confirmDeleteCementMovement(int movementId,String type,String kind,String date) {
+        new AlertDialog.Builder(this).setTitle("Delete cement movement?")
+            .setMessage("This will change "+type+" stock and recalculate subsequent balances and reports. Continue?")
+            .setNegativeButton("Cancel",null).setPositiveButton("Delete",(d,w)->{
+                db.getWritableDatabase().execSQL("DELETE FROM cement_moves WHERE id=?",new Object[]{movementId});
+                toast("Cement movement deleted. Stock balances and reports have been recalculated.");render();
+            }).show();
+    }
+
     private void steelPage() {
+        if (selectedCompanyId > 0) {
+            Cursor selected = db.getReadableDatabase().rawQuery(
+                "SELECT name FROM companies WHERE id=?", new String[]{String.valueOf(selectedCompanyId)});
+            if (!selected.moveToFirst()) {
+                selected.close();
+                selectedCompanyId = -1;
+                steelPage();
+                return;
+            }
+            String companyName = selected.getString(0);
+            selected.close();
+            companyDetailPage(selectedCompanyId, companyName);
+            return;
+        }
+
         heading("Steel inventory");
-        double physical=db.steelQty(), reserved=db.customerPending(), available=physical-reserved, avg=db.steelAvgCost();
-        card("Physical stock", qtyText(physical), "Weighted average cost: "+money(avg)+"/t");
-        card("Reserved for customers",qtyText(reserved),"Pending customer deliveries");
+        double physical=db.steelQty(), reserved=db.customerPending(), available=physical-reserved;
+        card("Physical stock", qtyText(physical), "Steel physically received into storage");
+        card("Reserved for customers",qtyText(reserved),"Pending customer deliveries; still part of physical stock");
         card("Available to book",qtyText(Math.max(0,available)),"Physical stock minus customer reservations");
-        card("Pending company bookings",qtyText(db.companyPending()),"Not yet dispatched into storage");
-        section("Company side");
-        Button cb=button("＋ Company booking",blue), cd=button("↓ Company dispatch / receive",blue);
-        content.addView(cb); content.addView(cd);
-        cb.setOnClickListener(v->companyBooking()); cd.setOnClickListener(v->companyDispatch());
-        section("Customer side");
-        Button ub=button("＋ Customer booking",ink), ud=button("↓ Customer delivery",ink);
-        content.addView(ub); content.addView(ud);
-        ub.setOnClickListener(v->customerBooking()); ud.setOnClickListener(v->customerDelivery());
+        card("Pending company bookings",qtyText(db.companyPending()),"Not counted as physical stock until received");
+
+        LinearLayout titleLine = new LinearLayout(this);
+        titleLine.setGravity(Gravity.CENTER_VERTICAL);
+        TextView companiesTitle = text("Companies", 20, ink, true);
+        titleLine.addView(companiesTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        Button add = button("＋", blue);
+        add.setTextSize(25);
+        add.setContentDescription("Add company");
+        LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(dp(56), dp(48));
+        titleLine.addView(add, addLp);
+        content.addView(titleLine);
+        add.setOnClickListener(v -> addCompanyDialog());
+
+        Cursor companies=db.getReadableDatabase().rawQuery(
+            "SELECT id,name FROM companies ORDER BY name COLLATE NOCASE",null);
+        if(!companies.moveToFirst()) {
+            empty("No companies yet. Tap + to add your first company.");
+        } else do {
+            final int cid=companies.getInt(0);
+            String name=companies.getString(1);
+            double q=db.companyQty(cid), reservedCompany=db.customerPending(cid);
+            LinearLayout companyCard = new LinearLayout(this);
+            companyCard.setOrientation(LinearLayout.VERTICAL);
+            companyCard.setPadding(dp(15),dp(13),dp(15),dp(13));
+            companyCard.setBackground(roundRect(surface,dp(16),dp(1),outline,dp(16)));
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);
+            cp.bottomMargin=dp(9);
+            companyCard.setLayoutParams(cp);
+            LinearLayout first=new LinearLayout(this);
+            first.setGravity(Gravity.CENTER_VERTICAL);
+            first.addView(text(name,17,ink,true),new LinearLayout.LayoutParams(0,-2,1));
+            first.addView(text("›",28,secondaryText,true));
+            companyCard.addView(first);
+            companyCard.addView(text("Physical: "+qtyText(q),13,secondaryText,false));
+            companyCard.addView(text("Reserved: "+qtyText(reservedCompany)+"  •  Available: "+qtyText(Math.max(0,q-reservedCompany)),12,secondaryText,false));
+            companyCard.setClickable(true);
+            companyCard.setFocusable(true);
+            companyCard.setOnClickListener(v->{selectedCompanyId=cid;render();});
+            content.addView(companyCard);
+        } while(companies.moveToNext());
+        companies.close();
+
         section("Pending company bookings");
-        Cursor c=db.getReadableDatabase().rawQuery("SELECT id,company,qty,dispatched,rate,date FROM company_bookings WHERE qty>dispatched ORDER BY id DESC",null);
+        Cursor c=db.getReadableDatabase().rawQuery(
+            "SELECT id,company,qty,dispatched,rate,date FROM company_bookings WHERE qty>dispatched ORDER BY id DESC",null);
         if(!c.moveToFirst()) empty("No pending company bookings.");
         else do {double pending=c.getDouble(2)-c.getDouble(3);row(c.getString(1),qtyText(pending)+" • "+money(c.getDouble(4))+"/t","Booked "+c.getString(5));}while(c.moveToNext());
         c.close();
+
         section("Pending customer bookings");
-        Cursor u=db.getReadableDatabase().rawQuery("SELECT customer,qty,delivered,rate,date FROM customer_bookings WHERE qty>delivered ORDER BY id DESC",null);
+        Cursor u=db.getReadableDatabase().rawQuery(
+            "SELECT customer,qty,delivered,rate,date,company FROM customer_bookings WHERE qty>delivered ORDER BY id DESC",null);
         if(!u.moveToFirst()) empty("No pending customer bookings.");
-        else do {row(u.getString(0),qtyText(u.getDouble(1)-u.getDouble(2))+" • "+money(u.getDouble(3))+"/t","Booked "+u.getString(4));}while(u.moveToNext());
+        else do {row(u.getString(0)+" • "+u.getString(5),qtyText(u.getDouble(1)-u.getDouble(2))+" • "+money(u.getDouble(3))+"/t","Booked "+u.getString(4));}while(u.moveToNext());
         u.close();
     }
 
+    private void addCompanyDialog() {
+        LinearLayout f=form();
+        EditText name=input("Company name");
+        addField(f,"Company name",name);
+        new AlertDialog.Builder(this).setTitle("Add company").setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                String n=name.getText().toString().trim().replaceAll("\\s+"," ");
+                if(n.isEmpty()){toast("Enter a company name.");return;}
+                try {
+                    db.getWritableDatabase().execSQL("INSERT OR IGNORE INTO companies(name) VALUES(?)",new Object[]{n});
+                    Cursor c=db.getReadableDatabase().rawQuery("SELECT id FROM companies WHERE name=? COLLATE NOCASE",new String[]{n});
+                    if(c.moveToFirst()) selectedCompanyId=c.getInt(0);
+                    c.close();
+                    toast("Company saved.");
+                    render();
+                } catch(Exception e) { toast("Could not add company: "+e.getMessage()); }
+            }).show();
+    }
+
+    private void companyDetailPage(int cid, String companyName) {
+        Button back=button("‹  All companies",surface);
+        back.setTextColor(ink);
+        content.addView(back);
+        back.setOnClickListener(v->{selectedCompanyId=-1;render();});
+        heading(companyName);
+        double physical=db.companyQty(cid), reserved=db.customerPending(cid);
+        card("Physical stock",qtyText(physical),"Received stock less deliveries and retail sales");
+        card("Reserved for customers",qtyText(reserved),"Customer bookings not yet delivered");
+        card("Available stock",qtyText(Math.max(0,physical-reserved)),"Available stock cannot be reserved twice");
+        card("Average stock cost",money(db.companyAvgCost(cid))+"/t","Weighted average cost for this company");
+
+        Button actions=button("＋  Company actions",blue);
+        actions.setContentDescription("Open actions for "+companyName);
+        content.addView(actions);
+        actions.setOnClickListener(v->showCompanyActions(cid));
+
+        section("Pending company bookings");
+        Cursor b=db.getReadableDatabase().rawQuery(
+            "SELECT id,qty,dispatched,rate,date FROM company_bookings WHERE company_id=? AND qty>dispatched ORDER BY id DESC",
+            new String[]{String.valueOf(cid)});
+        if(!b.moveToFirst()) empty("No pending company bookings.");
+        else do {row("Booking #"+b.getInt(0),qtyText(b.getDouble(1)-b.getDouble(2))+" pending",
+            "Rate "+money(b.getDouble(3))+"/t • "+b.getString(4));}while(b.moveToNext());
+        b.close();
+
+        section("Pending customer bookings");
+        Cursor u=db.getReadableDatabase().rawQuery(
+            "SELECT id,customer,qty,delivered,rate,date FROM customer_bookings WHERE company_id=? AND qty>delivered ORDER BY id DESC",
+            new String[]{String.valueOf(cid)});
+        if(!u.moveToFirst()) empty("No pending customer bookings for this company.");
+        else do {row(u.getString(1)+" • Booking #"+u.getInt(0),qtyText(u.getDouble(2)-u.getDouble(3)),
+            "Rate "+money(u.getDouble(4))+"/t • "+u.getString(5));}while(u.moveToNext());
+        u.close();
+
+        section("Recent movements");
+        Cursor m=db.getReadableDatabase().rawQuery(
+            "SELECT id,kind,qty,unit_cost,date,ref FROM company_stock_moves WHERE company_id=? ORDER BY id DESC LIMIT 50",
+            new String[]{String.valueOf(cid)});
+        if(!m.moveToFirst()) empty("No stock movements yet.");
+        else do {
+            int mid=m.getInt(0);
+            row(m.getString(1),qtyText(m.getDouble(2))+" @ "+money(m.getDouble(3))+"/t",
+                m.getString(4)+" • "+m.getString(5));
+            Button edit=button("Edit / Delete movement #"+mid,surface);
+            edit.setTextColor(ink);
+            content.addView(edit);
+            edit.setOnClickListener(v->editDeleteStockMovement(mid));
+        } while(m.moveToNext());
+        m.close();
+    }
+
+    private void showCompanyActions(int cid) {
+        String[] items={"Company Booking","Company Dispatch / Receive","Customer Booking",
+            "Customer Delivery","Retail Sale"};
+        new AlertDialog.Builder(this).setTitle("Company actions")
+            .setItems(items,(dialog,which)->{
+                if(which==0) companyBookingFor(cid);
+                else if(which==1) companyDispatchFor(cid);
+                else if(which==2) customerBookingFor(cid);
+                else if(which==3) customerDeliveryFor(cid);
+                else retailSale(cid);
+            }).show();
+    }
+
     private void companyBooking() {
-        LinearLayout f=form(); EditText company=input("Company name"), qty=input("Quantity in tons (e.g. 2.500)"), rate=input("Booking rate ₹ per ton"), date=input(today());
-        addField(f,"Company name",company);addField(f,"Quantity (tons)",qty);addField(f,"Rate per ton (₹)",rate);addField(f,"Booking date",date);
+        LinearLayout f=form(); AutoCompleteTextView company=new AutoCompleteTextView(this);
+        company.setSingleLine(true);company.setTextSize(16);company.setHint("Start typing company name");
+        company.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_dropdown_item_1line,db.companyNames()));
+        EditText qty=input("Quantity in tons (e.g. 2.500)"), rate=input("Booking rate ₹ per ton"), date=dateInput(today(), false);
+        addField(f,"Company name (suggestions appear as you type)",company);addField(f,"Quantity (tons)",qty);addField(f,"Rate per ton (₹)",rate);addField(f,"Booking date",date);
         new AlertDialog.Builder(this).setTitle("Company booking").setView(f).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
             String n=company.getText().toString().trim(), dt=date.getText().toString().trim();double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());
             if(n.isEmpty()||q<=0||r<=0||!validDate(dt)){toast("Enter company, positive quantity/rate, and valid date.");return;}
-            db.getWritableDatabase().execSQL("INSERT INTO company_bookings(company,qty,dispatched,rate,date) VALUES(?,?,0,?,?)",new Object[]{n,q,r,dt});
-            toast("Company booking saved.");render();
+            saveCompanyBooking(n,q,r,dt);
         }).show();
+    }
+
+    private void companyBookingFor(int cid) {
+        String name=db.companyName(cid);
+        LinearLayout f=form();
+        f.addView(label("Company"));f.addView(text(name,17,ink,true));
+        EditText qty=input("Quantity in tons (e.g. 2.500)"),rate=input("Booking rate ₹ per ton"),date=dateInput(today(),false);
+        addField(f,"Quantity (tons)",qty);addField(f,"Rate per ton (₹)",rate);addField(f,"Booking date",date);
+        new AlertDialog.Builder(this).setTitle("Company booking • "+name).setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());
+                String dt=date.getText().toString().trim();
+                if(q<=0||r<=0||!validDate(dt)){toast("Enter positive quantity/rate and a valid date.");return;}
+                saveCompanyBooking(name,q,r,dt);
+            }).show();
+    }
+
+    private void saveCompanyBooking(String name,double q,double rate,String dt) {
+        SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();
+        try {
+            int cid=db.getOrCreateCompany(s,name);
+            String canonical=db.companyName(cid);
+            s.execSQL("INSERT INTO company_bookings(company,qty,dispatched,rate,date,company_id) VALUES(?,?,0,?,?,?)",
+                new Object[]{canonical,q,rate,dt,cid});
+            s.setTransactionSuccessful();
+            toast("Company booking saved.");
+        } catch(Exception e) {toast("Could not save company booking: "+e.getMessage());}
+        finally {s.endTransaction();}
+        render();
     }
 
     private void companyDispatch() {
         ArrayList<Integer> ids=new ArrayList<>(); ArrayList<String> labels=new ArrayList<>();
-        Cursor c=db.getReadableDatabase().rawQuery("SELECT id,company,qty,dispatched,rate FROM company_bookings WHERE qty>dispatched ORDER BY id DESC",null);
+        Cursor c=db.getReadableDatabase().rawQuery("SELECT id,company,qty,dispatched,rate,company_id FROM company_bookings WHERE qty>dispatched ORDER BY id DESC",null);
         while(c.moveToNext()){ids.add(c.getInt(0));labels.add(c.getString(1)+" • pending "+qtyText(c.getDouble(2)-c.getDouble(3))+" @ "+money(c.getDouble(4))+"/t");}c.close();
         if(ids.isEmpty()){toast("No pending company booking to dispatch.");return;}
-        LinearLayout f=form(); Spinner pick=spinner(labels.toArray(new String[0]));EditText qty=input("Dispatch quantity in tons");EditText date=input(today());
+        LinearLayout f=form();Spinner pick=spinner(labels.toArray(new String[0]));EditText qty=input("Dispatch quantity in tons");EditText date=dateInput(today(), false);
         addField(f,"Company booking",pick);addField(f,"Dispatch quantity (tons)",qty);addField(f,"Dispatch date",date);
         new AlertDialog.Builder(this).setTitle("Company dispatch / receive").setView(f).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
             int id=ids.get(pick.getSelectedItemPosition());double q=parse(qty.getText().toString());String dt=date.getText().toString().trim();
-            Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,dispatched,rate FROM company_bookings WHERE id=?",new String[]{""+id});
-            if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}double pending=b.getDouble(0)-b.getDouble(1),r=b.getDouble(2);b.close();
+            Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,dispatched,rate,company_id FROM company_bookings WHERE id=?",new String[]{""+id});
+            if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}double pending=b.getDouble(0)-b.getDouble(1),r=b.getDouble(2);int cid=b.getInt(3);b.close();
             if(q<=0||q>pending+0.000001||!validDate(dt)){toast("Quantity must be positive and no more than pending booking.");return;}
-            SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();
-            try{
+            SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();try{
                 s.execSQL("UPDATE company_bookings SET dispatched=dispatched+? WHERE id=?",new Object[]{q,id});
-                s.execSQL("INSERT INTO steel_moves(kind,qty,unit_cost,date,ref) VALUES('RECEIPT',?,?,?,?)",new Object[]{q,r,dt,"Company booking #"+id});
+                s.execSQL("INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,'RECEIPT',?,?,?,?)",new Object[]{cid,q,r,dt,"Company booking #"+id});
                 s.setTransactionSuccessful();
-            }finally{s.endTransaction();}
-            toast("Dispatch received into physical stock.");render();
+            }catch(Exception e){toast("Could not record dispatch: "+e.getMessage());return;}finally{s.endTransaction();}
+            toast("Dispatch received into "+db.companyName(cid)+" physical stock.");render();
         }).show();
     }
 
+    private void companyDispatchFor(int cid) {
+        ArrayList<Integer> ids=new ArrayList<>();ArrayList<String> labels=new ArrayList<>();
+        Cursor c=db.getReadableDatabase().rawQuery(
+            "SELECT id,qty,dispatched,rate FROM company_bookings WHERE company_id=? AND qty>dispatched ORDER BY id DESC",
+            new String[]{String.valueOf(cid)});
+        while(c.moveToNext()){ids.add(c.getInt(0));labels.add("Booking #"+c.getInt(0)+" • pending "+qtyText(c.getDouble(1)-c.getDouble(2))+" @ "+money(c.getDouble(3))+"/t");}
+        c.close();
+        if(ids.isEmpty()){toast("No pending booking for "+db.companyName(cid)+".");return;}
+        LinearLayout f=form();Spinner pick=spinner(labels.toArray(new String[0]));
+        EditText qty=input("Dispatch quantity in tons"),date=dateInput(today(),false);
+        addField(f,"Company booking",pick);addField(f,"Dispatch quantity (tons)",qty);addField(f,"Dispatch date",date);
+        new AlertDialog.Builder(this).setTitle("Dispatch / receive • "+db.companyName(cid)).setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                int id=ids.get(pick.getSelectedItemPosition());
+                double q=parse(qty.getText().toString());String dt=date.getText().toString().trim();
+                Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,dispatched,rate,company_id FROM company_bookings WHERE id=?",
+                    new String[]{String.valueOf(id)});
+                if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}
+                double pending=b.getDouble(0)-b.getDouble(1),rate=b.getDouble(2);int companyId=b.getInt(3);b.close();
+                if(companyId!=cid||q<=0||q>pending+0.000001||!validDate(dt)){toast("Check company, quantity, and date.");return;}
+                SQLiteDatabase sql=db.getWritableDatabase();sql.beginTransaction();
+                try {
+                    sql.execSQL("UPDATE company_bookings SET dispatched=dispatched+? WHERE id=?",new Object[]{q,id});
+                    sql.execSQL("INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,'RECEIPT',?,?,?,?)",
+                        new Object[]{cid,q,rate,dt,"Company booking #"+id});
+                    sql.setTransactionSuccessful();
+                    toast("Stock received into "+db.companyName(cid)+".");
+                } catch(Exception e){toast("Could not record dispatch: "+e.getMessage());}
+                finally{sql.endTransaction();}
+                render();
+            }).show();
+    }
+
     private void customerBooking() {
-        LinearLayout f=form();EditText customer=input("Customer name"),qty=input("Quantity in tons (e.g. 0.750)"),rate=input("Selling rate ₹ per ton"),date=input(today());
-        addField(f,"Customer name",customer);addField(f,"Quantity (tons)",qty);addField(f,"Selling rate (₹/ton)",rate);addField(f,"Booking date",date);
+        ArrayList<Integer> companyIds=new ArrayList<>();ArrayList<String> companyLabels=new ArrayList<>();Cursor cc=db.getReadableDatabase().rawQuery("SELECT id,name FROM companies ORDER BY name COLLATE NOCASE",null);
+        while(cc.moveToNext()){int id=cc.getInt(0);double free=db.companyQty(id)-db.customerPending(id);if(free>0.000001){companyIds.add(id);companyLabels.add(cc.getString(1)+" • available "+qtyText(free));}}cc.close();
+        if(companyIds.isEmpty()){toast("No unreserved physical stock is available from any company.");return;}
+        LinearLayout f=form();EditText customer=input("Customer name"),qty=input("Quantity in tons (e.g. 0.750)"),rate=input("Selling rate ₹ per ton"),date=dateInput(today(),false);Spinner companyPick=spinner(companyLabels.toArray(new String[0]));
+        addField(f,"Stock company",companyPick);addField(f,"Customer name",customer);addField(f,"Quantity (tons)",qty);addField(f,"Selling rate (₹/ton)",rate);addField(f,"Booking date",date);
         new AlertDialog.Builder(this).setTitle("Customer booking").setView(f).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
-            String n=customer.getText().toString().trim(),dt=date.getText().toString().trim();double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());
+            String n=customer.getText().toString().trim(),dt=date.getText().toString().trim();double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());int cid=companyIds.get(companyPick.getSelectedItemPosition());
             if(n.isEmpty()||q<=0||r<=0||!validDate(dt)){toast("Enter customer, positive quantity/rate, and valid date.");return;}
-            double available=db.steelQty()-db.customerPending();
-            if(q>available+0.000001){toast("Not enough available physical stock. Available: "+qtyText(Math.max(0,available)));return;}
-            double cost=db.steelAvgCost(), profit=(r-cost)*q;
-            db.getWritableDatabase().execSQL("INSERT INTO customer_bookings(customer,qty,delivered,rate,cost_at_booking,expected_profit,date) VALUES(?,?,0,?,?,?,?)",new Object[]{n,q,r,cost,profit,dt});
-            toast("Customer booking saved. Expected gross profit: "+money(profit));render();
+            double available=db.companyQty(cid)-db.customerPending(cid);if(q>available+0.000001){toast("Not enough available stock from this company. Available: "+qtyText(Math.max(0,available)));return;}
+            double cost=db.companyAvgCost(cid),profit=(r-cost)*q;String cn=db.companyName(cid);
+            db.getWritableDatabase().execSQL("INSERT INTO customer_bookings(customer,qty,delivered,rate,cost_at_booking,expected_profit,date,company,company_id) VALUES(?,?,0,?,?,?, ?,?,?)",new Object[]{n,q,r,cost,profit,dt,cn,cid});
+            toast("Customer booking saved against "+cn+". Expected gross profit: "+money(profit));render();
         }).show();
+    }
+
+    private void customerBookingFor(int cid) {
+        double available=db.companyQty(cid)-db.customerPending(cid);
+        if(available<=0.000001){toast("No unreserved physical stock available from "+db.companyName(cid)+".");return;}
+        LinearLayout f=form();
+        f.addView(label("Stock company"));f.addView(text(db.companyName(cid),17,ink,true));
+        EditText customer=input("Customer name"),qty=input("Quantity in tons (e.g. 0.750)"),
+            rate=input("Selling rate ₹ per ton"),date=dateInput(today(),false);
+        addField(f,"Customer name",customer);addField(f,"Quantity (tons)",qty);
+        addField(f,"Selling rate (₹/ton)",rate);addField(f,"Booking date",date);
+        new AlertDialog.Builder(this).setTitle("Customer booking • "+db.companyName(cid)).setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                String n=customer.getText().toString().trim(),dt=date.getText().toString().trim();
+                double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());
+                double free=db.companyQty(cid)-db.customerPending(cid);
+                if(n.isEmpty()||q<=0||r<=0||!validDate(dt)){toast("Enter customer, positive quantity/rate, and valid date.");return;}
+                if(q>free+0.000001){toast("Not enough available stock. Available: "+qtyText(Math.max(0,free)));return;}
+                double cost=db.companyAvgCost(cid),profit=(r-cost)*q;String cn=db.companyName(cid);
+                db.getWritableDatabase().execSQL(
+                    "INSERT INTO customer_bookings(customer,qty,delivered,rate,cost_at_booking,expected_profit,date,company,company_id) VALUES(?,?,0,?,?,?, ?,?,?)",
+                    new Object[]{n,q,r,cost,profit,dt,cn,cid});
+                toast("Customer booking saved against "+cn+". Expected gross profit: "+money(profit));
+                render();
+            }).show();
     }
 
     private void customerDelivery() {
         ArrayList<Integer> ids=new ArrayList<>();ArrayList<String> labels=new ArrayList<>();
-        Cursor c=db.getReadableDatabase().rawQuery("SELECT id,customer,qty,delivered,rate FROM customer_bookings WHERE qty>delivered ORDER BY id DESC",null);
-        while(c.moveToNext()){ids.add(c.getInt(0));labels.add(c.getString(1)+" • pending "+qtyText(c.getDouble(2)-c.getDouble(3))+" @ "+money(c.getDouble(4))+"/t");}c.close();
+        Cursor c=db.getReadableDatabase().rawQuery("SELECT id,customer,qty,delivered,rate,company,company_id FROM customer_bookings WHERE qty>delivered ORDER BY id DESC",null);
+        while(c.moveToNext()){ids.add(c.getInt(0));labels.add(c.getString(1)+" • "+c.getString(5)+" • pending "+qtyText(c.getDouble(2)-c.getDouble(3))+" @ "+money(c.getDouble(4))+"/t");}c.close();
         if(ids.isEmpty()){toast("No pending customer booking.");return;}
-        LinearLayout f=form();Spinner pick=spinner(labels.toArray(new String[0]));EditText qty=input("Delivery quantity in tons"),date=input(today());
+        LinearLayout f=form();Spinner pick=spinner(labels.toArray(new String[0]));EditText qty=input("Delivery quantity in tons"),date=dateInput(today(), false);
         addField(f,"Customer booking",pick);addField(f,"Delivery quantity (tons)",qty);addField(f,"Delivery date",date);
         new AlertDialog.Builder(this).setTitle("Customer delivery").setView(f).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
             int id=ids.get(pick.getSelectedItemPosition());double q=parse(qty.getText().toString());String dt=date.getText().toString().trim();
-            Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,delivered,rate FROM customer_bookings WHERE id=?",new String[]{""+id});
-            if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}double pending=b.getDouble(0)-b.getDouble(1),r=b.getDouble(2);b.close();
-            if(q<=0||q>pending+0.000001||q>db.steelQty()+0.000001||!validDate(dt)){toast("Check quantity, stock, and date.");return;}
-            double cost=db.steelAvgCost();
-            SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();
-            try{
+            Cursor b=db.getReadableDatabase().rawQuery("SELECT qty,delivered,rate,company_id FROM customer_bookings WHERE id=?",new String[]{""+id});
+            if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}double pending=b.getDouble(0)-b.getDouble(1),r=b.getDouble(2);int cid=b.getInt(3);b.close();
+            if(q<=0||q>pending+0.000001||q>db.companyQty(cid)+0.000001||!validDate(dt)){toast("Check quantity, company stock, and date.");return;}
+            double cost=db.companyAvgCost(cid);SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();try{
                 s.execSQL("UPDATE customer_bookings SET delivered=delivered+? WHERE id=?",new Object[]{q,id});
-                s.execSQL("INSERT INTO steel_moves(kind,qty,unit_cost,date,ref) VALUES('DELIVERY',?,?,?,?)",new Object[]{q,cost,dt,"Customer booking #"+id});
-                s.setTransactionSuccessful();
-            }finally{s.endTransaction();}
-            toast("Delivery recorded. Estimated gross profit on this delivery: "+money((r-cost)*q));render();
+                s.execSQL("INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,'DELIVERY',?,?,?,?)",new Object[]{cid,q,cost,dt,"Customer booking #"+id});s.setTransactionSuccessful();
+            }catch(Exception e){toast("Could not record delivery: "+e.getMessage());return;}finally{s.endTransaction();}
+            toast("Delivery recorded. Estimated gross profit: "+money((r-cost)*q));render();
         }).show();
     }
 
+    private void customerDeliveryFor(int cid) {
+        ArrayList<Integer> ids=new ArrayList<>();ArrayList<String> labels=new ArrayList<>();
+        Cursor c=db.getReadableDatabase().rawQuery(
+            "SELECT id,customer,qty,delivered,rate FROM customer_bookings WHERE company_id=? AND qty>delivered ORDER BY id DESC",
+            new String[]{String.valueOf(cid)});
+        while(c.moveToNext()){ids.add(c.getInt(0));labels.add(c.getString(1)+" • pending "+qtyText(c.getDouble(2)-c.getDouble(3))+" @ "+money(c.getDouble(4))+"/t");}
+        c.close();
+        if(ids.isEmpty()){toast("No pending customer booking for this company.");return;}
+        LinearLayout f=form();Spinner pick=spinner(labels.toArray(new String[0]));
+        EditText qty=input("Delivery quantity in tons"),date=dateInput(today(),false);
+        addField(f,"Customer booking",pick);addField(f,"Delivery quantity (tons)",qty);addField(f,"Delivery date",date);
+        new AlertDialog.Builder(this).setTitle("Customer delivery • "+db.companyName(cid)).setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                int id=ids.get(pick.getSelectedItemPosition());
+                double q=parse(qty.getText().toString());String dt=date.getText().toString().trim();
+                Cursor b=db.getReadableDatabase().rawQuery(
+                    "SELECT qty,delivered,rate,company_id FROM customer_bookings WHERE id=?",
+                    new String[]{String.valueOf(id)});
+                if(!b.moveToFirst()){b.close();toast("Booking not found.");return;}
+                double pending=b.getDouble(0)-b.getDouble(1),rate=b.getDouble(2);int companyId=b.getInt(3);b.close();
+                if(companyId!=cid||q<=0||q>pending+0.000001||q>db.companyQty(cid)+0.000001||!validDate(dt)){
+                    toast("Check quantity, company stock, and date.");return;
+                }
+                double cost=db.companyAvgCost(cid);SQLiteDatabase sql=db.getWritableDatabase();sql.beginTransaction();
+                try {
+                    sql.execSQL("UPDATE customer_bookings SET delivered=delivered+? WHERE id=?",new Object[]{q,id});
+                    sql.execSQL("INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,'DELIVERY',?,?,?,?)",
+                        new Object[]{cid,q,cost,dt,"Customer booking #"+id});
+                    sql.setTransactionSuccessful();
+                    toast("Delivery recorded. Estimated gross profit: "+money((rate-cost)*q));
+                } catch(Exception e){toast("Could not record delivery: "+e.getMessage());}
+                finally{sql.endTransaction();}
+                render();
+            }).show();
+    }
+
+    private void retailSale(int cid) {
+        double physical=db.companyQty(cid), reserved=db.customerPending(cid);
+        double available=physical-reserved;
+        if(available<=0.000001){toast("No unreserved stock available for retail sale.");return;}
+        LinearLayout f=form();
+        f.addView(label("Company"));f.addView(text(db.companyName(cid),17,ink,true));
+        EditText customer=input("Customer name (optional)"),qty=input("Sale quantity in tons"),
+            rate=input("Selling rate ₹ per ton"),date=dateInput(today(),false);
+        addField(f,"Customer name (optional)",customer);addField(f,"Quantity (tons)",qty);
+        addField(f,"Selling rate (₹/ton)",rate);addField(f,"Sale date",date);
+        new AlertDialog.Builder(this).setTitle("Retail sale • "+db.companyName(cid)).setView(f)
+            .setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{
+                double q=parse(qty.getText().toString()),r=parse(rate.getText().toString());
+                String n=customer.getText().toString().trim(),dt=date.getText().toString().trim();
+                double free=db.companyQty(cid)-db.customerPending(cid);
+                if(q<=0||r<=0||!validDate(dt)){toast("Enter a positive quantity/rate and valid date.");return;}
+                if(q>free+0.000001){toast("Sale exceeds available stock. Available: "+qtyText(Math.max(0,free)));return;}
+                double cost=db.companyAvgCost(cid);
+                String ref="Retail sale"+(n.isEmpty()?"":" • "+n);
+                db.getWritableDatabase().execSQL(
+                    "INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,'RETAIL SALE',?,?,?,?)",
+                    new Object[]{cid,q,cost,dt,ref});
+                toast("Retail sale recorded. Estimated gross profit: "+money((r-cost)*q));
+                render();
+            }).show();
+    }
+
+    private void editDeleteStockMovement(int movementId) {
+        Cursor c=db.getReadableDatabase().rawQuery("SELECT company_id,kind,qty,unit_cost,date,ref FROM company_stock_moves WHERE id=?",new String[]{String.valueOf(movementId)});
+        if(!c.moveToFirst()){c.close();toast("Movement not found.");return;}int cid=c.getInt(0);String kind=c.getString(1),oldDate=c.getString(4),ref=c.getString(5);double oldQty=c.getDouble(2),oldCost=c.getDouble(3);c.close();
+        LinearLayout f=form();EditText qty=input("Quantity in tons"),cost=input("Rate / cost per ton"),date=dateInput(oldDate,false);qty.setText(String.valueOf(oldQty));cost.setText(String.valueOf(oldCost));addField(f,"Quantity (tons)",qty);addField(f,"Rate / cost (₹/ton)",cost);addField(f,"Date",date);
+        new AlertDialog.Builder(this).setTitle("Edit movement #"+movementId).setView(f).setNegativeButton("Cancel",null).setNeutralButton("Delete",(d,w)->confirmDeleteMovement(movementId,cid,kind,oldQty,ref)).setPositiveButton("Save changes",(d,w)->{
+            double nq=parse(qty.getText().toString()),nc=parse(cost.getText().toString());String nd=date.getText().toString().trim();if(nq<=0||nc<=0||!validDate(nd)){toast("Enter a positive quantity/cost and valid date.");return;}
+            SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();try{
+                s.execSQL("UPDATE company_stock_moves SET qty=?,unit_cost=?,date=? WHERE id=?",new Object[]{nq,nc,nd,movementId});
+                if(ref!=null&&ref.startsWith("Company booking #")){int bid=parseId(ref);s.execSQL("UPDATE company_bookings SET dispatched=(SELECT COALESCE(SUM(qty),0) FROM company_stock_moves WHERE kind='RECEIPT' AND ref=?) WHERE id=?",new Object[]{ref,bid});Cursor chk=s.rawQuery("SELECT qty,dispatched FROM company_bookings WHERE id=?",new String[]{String.valueOf(bid)});if(chk.moveToFirst()&&chk.getDouble(1)>chk.getDouble(0)+0.000001){chk.close();throw new IllegalStateException("Receipt total cannot exceed the company booking quantity.");}chk.close();}
+                if(ref!=null&&ref.startsWith("Customer booking #")){int bid=parseId(ref);s.execSQL("UPDATE customer_bookings SET delivered=(SELECT COALESCE(SUM(qty),0) FROM company_stock_moves WHERE kind='DELIVERY' AND ref=?) WHERE id=?",new Object[]{ref,bid});}
+                if(db.companyQty(cid)+0.000001<db.customerPending(cid))throw new IllegalStateException("This change would leave less company stock than the customer reservations. Adjust reservations first.");
+                s.setTransactionSuccessful();
+            }catch(Exception e){toast("Edit not saved: "+e.getMessage());return;}finally{s.endTransaction();}toast("Movement updated.");render();
+        }).show();
+    }
+    private void confirmDeleteMovement(int movementId,int cid,String kind,double oldQty,String ref){
+        new AlertDialog.Builder(this).setTitle("Delete stock movement?").setMessage("This changes company stock and linked booking totals. Continue?").setNegativeButton("Cancel",null).setPositiveButton("Delete",(d,w)->{
+            SQLiteDatabase s=db.getWritableDatabase();s.beginTransaction();try{s.execSQL("DELETE FROM company_stock_moves WHERE id=?",new Object[]{movementId});
+                if(ref!=null&&ref.startsWith("Company booking #")){int bid=parseId(ref);s.execSQL("UPDATE company_bookings SET dispatched=(SELECT COALESCE(SUM(qty),0) FROM company_stock_moves WHERE kind='RECEIPT' AND ref=?) WHERE id=?",new Object[]{ref,bid});}
+                if(ref!=null&&ref.startsWith("Customer booking #")){int bid=parseId(ref);s.execSQL("UPDATE customer_bookings SET delivered=(SELECT COALESCE(SUM(qty),0) FROM company_stock_moves WHERE kind='DELIVERY' AND ref=?) WHERE id=?",new Object[]{ref,bid});}
+                if(db.companyQty(cid)+0.000001<db.customerPending(cid))throw new IllegalStateException("Cannot delete: company stock would fall below customer reservations.");
+                s.setTransactionSuccessful();
+            }catch(Exception e){toast("Delete not completed: "+e.getMessage());return;}finally{s.endTransaction();}toast("Movement deleted.");render();
+        }).show();
+    }
+    private int parseId(String ref){try{return Integer.parseInt(ref.substring(ref.indexOf('#')+1).trim());}catch(Exception e){return -1;}}
+
     private void reportsPage() {
         heading("Reports & analytics");
-        TextView note=text("Review stock, bookings and movement history. Set a date range to filter transaction reports.",13,Color.DKGRAY,false);
+        TextView note=text("Review stock, bookings and movement history. Choose the first and last dates for a period report; set From and To to the same date for a daily cement summary.",13,secondaryText,false);
         content.addView(note);
         section("Report period");
         LinearLayout range=form();
-        EditText from=input("Start date YYYY-MM-DD"); from.setText(reportStart);
-        EditText to=input("End date YYYY-MM-DD"); to.setText(reportEnd);
+        EditText from=dateInput(reportStart, true);
+        EditText to=dateInput(reportEnd, true);
         addField(range,"From date (optional)",from); addField(range,"To date (optional)",to); content.addView(range);
         Button apply=button("Apply date range",blue); content.addView(apply);
         apply.setOnClickListener(v->{String a=from.getText().toString().trim(),b=to.getText().toString().trim();
             if((!a.isEmpty()&&!validDate(a))||(!b.isEmpty()&&!validDate(b))||(!a.isEmpty()&&!b.isEmpty()&&a.compareTo(b)>0)){toast("Check the report dates. Use YYYY-MM-DD and make sure From is not after To.");return;}
             reportStart=a;reportEnd=b;render();});
+        Button downloadCement=button("Download daily cement stock report (CSV)",teal);content.addView(downloadCement);
+        downloadCement.setOnClickListener(v->{String a=reportStart.isEmpty()?db.cementStartDate():reportStart;String b=reportEnd.isEmpty()?today():reportEnd;if(a.isEmpty()){toast("Enter opening stock before downloading a report.");return;}if(!validDate(a)||!validDate(b)||a.compareTo(b)>0){toast("Select a valid From and To date first.");return;}if(a.compareTo(db.cementStartDate())<0){toast("Stock records begin on "+db.cementStartDate()+".");return;}startCementReportExport(a,b);});
         String filter=""; ArrayList<String> args=new ArrayList<>();
         if(!reportStart.isEmpty()){filter+=" AND date>=?";args.add(reportStart);} if(!reportEnd.isEmpty()){filter+=" AND date<=?";args.add(reportEnd);}
         section("Current stock snapshot");
-        for(String t:cementTypes) row(t,fmt(db.cementStock(t))+" bags","Current balance (all dates)");
-        row("Steel physically in stock",qtyText(db.steelQty()),"Weighted average cost "+money(db.steelAvgCost())+"/t");
+        for(String t:cementTypes) row(t,fmt(db.cementStockAt(t,today()))+" bags","Current balance as of today");
+        row("Steel physically in stock",qtyText(db.steelQty()),"Company-wise weighted average cost shown in Steel tab");
         row("Customer reservations",qtyText(db.customerPending()),"Available physical stock "+qtyText(Math.max(0,db.steelQty()-db.customerPending())));
         row("Unfulfilled company bookings",qtyText(db.companyPending()),"Not counted as physical stock");
+        cementPeriodSummary();
         section("Steel stock movement chart");
         content.addView(new StockChart(this, db));
         section("Customer bookings in selected period");
@@ -236,15 +680,15 @@ public class MainActivity extends Activity {
         if(!c.moveToFirst()) empty("No customer bookings in this period.");
         else do {row(c.getString(0),"Booked "+qtyText(c.getDouble(1))+" • delivered "+qtyText(c.getDouble(2)),"Expected gross profit "+money(c.getDouble(4))+" • "+c.getString(5));}while(c.moveToNext()); c.close();
         section("Steel movements in selected period");
-        Cursor m=db.getReadableDatabase().rawQuery("SELECT kind,qty,unit_cost,date,ref FROM steel_moves WHERE 1=1"+filter+" ORDER BY date DESC,id DESC LIMIT 200",args.toArray(new String[0]));
+        Cursor m=db.getReadableDatabase().rawQuery("SELECT c.name,kind,qty,unit_cost,date,ref FROM company_stock_moves JOIN companies c ON c.id=company_stock_moves.company_id WHERE 1=1"+filter+" ORDER BY date DESC,company_stock_moves.id DESC LIMIT 200",args.toArray(new String[0]));
         if(!m.moveToFirst()) empty("No steel movements in this period.");
-        else do {row(m.getString(0)+" • "+m.getString(4),qtyText(m.getDouble(1)),"Rate/cost "+money(m.getDouble(2))+"/t • "+m.getString(3));}while(m.moveToNext());m.close();
+        else do {row(m.getString(0)+" • "+m.getString(1)+" • "+m.getString(5),qtyText(m.getDouble(2)),"Rate/cost "+money(m.getDouble(3))+"/t • "+m.getString(4));}while(m.moveToNext());m.close();
         section("Cement movements in selected period");
         Cursor cm=db.getReadableDatabase().rawQuery("SELECT type,kind,qty,date FROM cement_moves WHERE 1=1"+filter+" ORDER BY date DESC,id DESC LIMIT 200",args.toArray(new String[0]));
         if(!cm.moveToFirst()) empty("No cement movements in this period.");
         else do {row(cm.getString(0)+" • "+cm.getString(1),fmt(cm.getDouble(2))+" bags",cm.getString(3));}while(cm.moveToNext());cm.close();
         section("Backup & Restore");
-        content.addView(text("Use the SAME Google account email every time. The saved email must match the Google account you authorize for Drive access. The app will ask you to sign in when you back up or restore.",13,Color.DKGRAY,false));
+        content.addView(text("Use the SAME Google account email every time. The saved email must match the Google account you authorize for Drive access. The app will ask you to sign in when you back up or restore.",13,secondaryText,false));
         EditText backupEmail=input("Google account email (example@gmail.com)");
         backupEmail.setSingleLine(true);
         backupEmail.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
@@ -263,13 +707,49 @@ public class MainActivity extends Activity {
         info.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Your data").setMessage("Transactions remain stored locally on this phone. After you save the backup email and authorize that same Google account for Drive access once, the app can upload the latest database to Drive during its daily scheduled backup when internet is available. You can also upload manually at any time. Restore downloads the latest app backup from that account. Keep the Google account secure and verify backups periodically.").setPositiveButton("OK",null).show());
     }
 
+    private void cementPeriodSummary() {
+        section("Cement stock summary for selected period");
+        String recordStart=db.cementStartDate();
+        if(recordStart.isEmpty()) {
+            empty("No cement movements yet. Enter initial opening stock for each cement type to start the stock record.");
+            return;
+        }
+        String from=reportStart.isEmpty()?recordStart:reportStart;
+        String to=reportEnd.isEmpty()?today():reportEnd;
+        if(from.compareTo(recordStart)<0) {
+            empty("Stock records begin on "+recordStart+". Records for earlier dates are unavailable. Choose a From date on or after the starting date.");
+            return;
+        }
+        if(to.compareTo(recordStart)<0) {
+            empty("Stock records begin on "+recordStart+". Records for earlier dates are unavailable.");
+            return;
+        }
+        if(from.compareTo(to)>0) {empty("Choose a valid period where From is not after To.");return;}
+        String title=from.equals(to)?"Daily summary • "+from:"Period summary • "+from+" to "+to;
+        section(title);
+        empty("Opening + purchases − sales = closing stock");
+        double totalOpening=0,totalPurchases=0,totalSales=0,totalClosing=0;
+        for(String type:cementTypes) {
+            double opening=db.cementOpeningForPeriod(type,from,recordStart);
+            double purchases=db.cementPeriodQty(type,"RECEIVED",from,to);
+            double sales=db.cementPeriodQty(type,"SALE",from,to);
+            double closing=db.cementStockAt(type,to);
+            totalOpening+=opening;totalPurchases+=purchases;totalSales+=sales;totalClosing+=closing;
+            row(type,fmt(closing)+" bags closing", "Opening "+fmt(opening)+" • Purchase "+fmt(purchases)+" • Sale "+fmt(sales));
+        }
+        row("TOTAL — ALL CEMENT",fmt(totalClosing)+" bags closing", "Opening "+fmt(totalOpening)+" • Purchase "+fmt(totalPurchases)+" • Sale "+fmt(totalSales));
+        if(Math.abs((totalOpening+totalPurchases-totalSales)-totalClosing)>0.000001) {
+            empty("Note: the displayed period does not reconcile. Please check opening-stock entries and transactions for this period.");
+        }
+    }
+
     private class StockChart extends View {
         private final Paint paint=new Paint(3); private final DB data;
-        StockChart(Context c, DB d){super(c);data=d;setMinimumHeight(dp(180));setBackground(roundRect(Color.WHITE,dp(18),dp(1),Color.rgb(226,232,240),dp(18)));setPadding(dp(12),dp(12),dp(12),dp(12));}
+        StockChart(Context c, DB d){super(c);data=d;setMinimumHeight(dp(180));setBackground(roundRect(surface,dp(18),dp(1),outline,dp(18)));setPadding(dp(12),dp(12),dp(12),dp(12));}
         @Override protected void onDraw(Canvas canvas){super.onDraw(canvas);float left=dp(22),right=getWidth()-dp(18),top=dp(18),bottom=getHeight()-dp(36);if(right<=left||bottom<=top)return;
-            paint.setColor(Color.rgb(226,232,240));paint.setStrokeWidth(dp(1));for(int i=0;i<4;i++){float y=top+(bottom-top)*i/3f;canvas.drawLine(left,y,right,y,paint);}
+            paint.setColor(outline);paint.setStrokeWidth(dp(1));for(int i=0;i<4;i++){float y=top+(bottom-top)*i/3f;canvas.drawLine(left,y,right,y,paint);}
             String[] labels={"Opening","Receipts","Deliveries","Current"};double opening=0,receipts=0,deliveries=0;
-            Cursor c=data.getReadableDatabase().rawQuery("SELECT kind,qty FROM steel_moves",null);while(c.moveToNext()){String k=c.getString(0);if("RECEIPT".equals(k))receipts+=c.getDouble(1);else if("DELIVERY".equals(k))deliveries+=c.getDouble(1);}c.close();
+            Cursor c=data.getReadableDatabase().rawQuery("SELECT kind,qty FROM company_stock_moves",null);while(c.moveToNext()){String k=c.getString(0);if("RECEIPT".equals(k))receipts+=c.getDouble(1);else if("DELIVERY".equals(k))deliveries+=c.getDouble(1);}c.close();
             double[] vals={opening,receipts,deliveries,data.steelQty()};double max=1;for(double v:vals)max=Math.max(max,v);float slot=(right-left)/4f,bar=slot*.48f;
             for(int i=0;i<vals.length;i++){float h=(float)(vals[i]/max)*(bottom-top);float x=left+i*slot+(slot-bar)/2;paint.setColor(i==3?teal:blue);canvas.drawRoundRect(x,bottom-h,x+bar,bottom,dp(5),dp(5),paint);paint.setColor(ink);paint.setTextSize(dp(10));paint.setTextAlign(Paint.Align.CENTER);canvas.drawText(labels[i],x+bar/2,bottom+dp(17),paint);paint.setTextSize(dp(9));canvas.drawText(String.format(Locale.US,"%.2f",vals[i]),x+bar/2,Math.max(top+dp(10),bottom-h-dp(5)),paint);}
         }
@@ -289,6 +769,23 @@ public class MainActivity extends Activity {
         String email=getBackupEmail();
         String message="Saved backup email: "+(email.isEmpty()?"Not set":email)+"\n\nIf this phone is lost or replaced:\n1. Install Shyam Co. on the new Android phone.\n2. Make sure you can sign in to the SAME Google account: "+(email.isEmpty()?"(set your backup email first)":email)+".\n3. Open Reports > Backup & Restore and enter/save that same email.\n4. Tap Restore from Google Drive and approve Google Drive access for the app.\n5. The app downloads the latest ShyamCo_Backup.db from that account and restores it.\n6. Check cement stock, steel stock, bookings and reports.\n\nUse Backup to Google Drive regularly. The app updates its named backup file in Drive rather than making a new file each time. Scheduled local backups are separate; automatic cloud uploads need a previously authorized Google account and may require you to sign in again after security changes.";
         new AlertDialog.Builder(this).setTitle("Restore on a new device").setMessage(message).setPositiveButton("OK",null).show();
+    }
+
+    private String csv(String value){if(value==null)return "\"\"";return "\""+value.replace("\"","\"\"")+"\"";}
+    private void startCementReportExport(String from,String to){
+        pendingCementReportFrom=from;pendingCementReportTo=to;
+        Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("text/csv");i.putExtra(Intent.EXTRA_TITLE,"ShyamCo_Cement_Stock_"+from+"_to_"+to+".csv");startActivityForResult(i,REQUEST_CEMENT_REPORT_EXPORT);
+    }
+    private String pendingCementReportFrom="",pendingCementReportTo="";
+    private void exportCementReport(Uri uri){
+        String from=pendingCementReportFrom,to=pendingCementReportTo;
+        if(from.isEmpty()||to.isEmpty()){toast("Please select the report date range again.");return;}
+        try(OutputStream out=getContentResolver().openOutputStream(uri);OutputStreamWriter w=new OutputStreamWriter(out,java.nio.charset.StandardCharsets.UTF_8);BufferedWriter bw=new BufferedWriter(w)){
+            bw.write("Date,Cement,Opening Stock (bags),Purchase (bags),Sale (bags),Closing Stock (bags)\n");
+            Calendar cal=Calendar.getInstance();cal.setTime(new SimpleDateFormat("yyyy-MM-dd",Locale.US).parse(from));Date end=new SimpleDateFormat("yyyy-MM-dd",Locale.US).parse(to);SimpleDateFormat df=new SimpleDateFormat("yyyy-MM-dd",Locale.US);
+            while(!cal.getTime().after(end)) {String day=df.format(cal.getTime());for(String type:cementTypes){double closing=db.cementStockAt(type,day);double purchases=db.cementPeriodQty(type,"RECEIVED",day,day);double sales=db.cementPeriodQty(type,"SALE",day,day);double opening=closing-purchases+sales;bw.write(csv(day)+","+csv(type)+","+fmt(opening)+","+fmt(purchases)+","+fmt(sales)+","+fmt(closing)+"\n");}cal.add(Calendar.DAY_OF_MONTH,1);}
+            bw.flush();toast("Cement stock report downloaded successfully.");
+        }catch(Exception e){toast("Could not save report: "+e.getMessage());}
     }
 
     private void startBackupExport() {
@@ -344,14 +841,19 @@ public class MainActivity extends Activity {
         Uri uri=data.getData();
         if(requestCode==REQUEST_BACKUP_EXPORT) exportDatabase(uri);
         else if(requestCode==REQUEST_BACKUP_RESTORE) restoreDatabase(uri);
+        else if(requestCode==REQUEST_CEMENT_REPORT_EXPORT) exportCementReport(uri);
     }
 
     private void runDriveAction(String action, String email) {
         if("restore".equals(action)) { try { db.close(); } catch(Exception ignored) {} }
         new Thread(() -> {
             try {
-                if("upload".equals(action)) DriveBackupManager.upload(this,email);
-                else if("restore".equals(action)) DriveBackupManager.download(this,email);
+                if("upload".equals(action)) {
+                    DriveBackupManager.upload(this,email);
+                } else if("restore".equals(action)) {
+                    db.close();
+                    DriveBackupManager.download(this,email);
+                }
                 runOnUiThread(() -> {
                     if("upload".equals(action)) toast("Google Drive backup completed for "+email);
                     else { try { db.close(); db=new DB(this); db.getWritableDatabase(); render(); toast("Google Drive backup restored successfully."); } catch(Exception e) { toast("Restored; reopen the app if totals do not refresh."); } }
@@ -403,52 +905,148 @@ public class MainActivity extends Activity {
     }
 
     private class DB extends SQLiteOpenHelper {
-        DB(Context c){super(c,"stock_manager.db",null,1);}
+        DB(Context c){super(c,"stock_manager.db",null,3);}
         public void onCreate(SQLiteDatabase s){
             s.execSQL("CREATE TABLE cement_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT,kind TEXT,qty REAL,date TEXT)");
-            s.execSQL("CREATE TABLE company_bookings(id INTEGER PRIMARY KEY AUTOINCREMENT,company TEXT,qty REAL,dispatched REAL,rate REAL,date TEXT)");
-            s.execSQL("CREATE TABLE customer_bookings(id INTEGER PRIMARY KEY AUTOINCREMENT,customer TEXT,qty REAL,delivered REAL,rate REAL,cost_at_booking REAL,expected_profit REAL,date TEXT)");
+            s.execSQL("CREATE TABLE companies(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL COLLATE NOCASE UNIQUE)");
+            s.execSQL("CREATE TABLE company_bookings(id INTEGER PRIMARY KEY AUTOINCREMENT,company TEXT,qty REAL,dispatched REAL,rate REAL,date TEXT,company_id INTEGER NOT NULL DEFAULT 0)");
+            s.execSQL("CREATE TABLE customer_bookings(id INTEGER PRIMARY KEY AUTOINCREMENT,customer TEXT,qty REAL,delivered REAL,rate REAL,cost_at_booking REAL,expected_profit REAL,date TEXT,company TEXT NOT NULL DEFAULT '',company_id INTEGER NOT NULL DEFAULT 0)");
             s.execSQL("CREATE TABLE steel_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,qty REAL,unit_cost REAL,date TEXT,ref TEXT)");
+            s.execSQL("CREATE TABLE company_stock_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,kind TEXT NOT NULL,qty REAL NOT NULL,unit_cost REAL NOT NULL,date TEXT NOT NULL,ref TEXT,FOREIGN KEY(company_id) REFERENCES companies(id))");
+            s.execSQL("CREATE INDEX IF NOT EXISTS idx_company_stock_date ON company_stock_moves(date)");
         }
-        public void onUpgrade(SQLiteDatabase s,int oldV,int newV){}
-        double cementStock(String type){
-            Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='SALE' THEN -qty ELSE qty END),0) FROM cement_moves WHERE type=?",new String[]{type});
-            double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;
+        public void onUpgrade(SQLiteDatabase s,int oldV,int newV){
+            if(oldV<2){
+                s.execSQL("CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL COLLATE NOCASE UNIQUE)");
+                s.execSQL("CREATE TABLE IF NOT EXISTS company_stock_moves(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,kind TEXT NOT NULL,qty REAL NOT NULL,unit_cost REAL NOT NULL,date TEXT NOT NULL,ref TEXT,FOREIGN KEY(company_id) REFERENCES companies(id))");
+                if(!hasColumn(s,"customer_bookings","company"))s.execSQL("ALTER TABLE customer_bookings ADD COLUMN company TEXT NOT NULL DEFAULT ''");
+            }
+            if(!hasColumn(s,"company_bookings","company_id"))s.execSQL("ALTER TABLE company_bookings ADD COLUMN company_id INTEGER NOT NULL DEFAULT 0");
+            if(!hasColumn(s,"customer_bookings","company_id"))s.execSQL("ALTER TABLE customer_bookings ADD COLUMN company_id INTEGER NOT NULL DEFAULT 0");
+            if(oldV<3){
+                int legacy=getOrCreateCompany(s,"Legacy / Unassigned");
+                Cursor b=s.rawQuery("SELECT id,company FROM company_bookings",null);while(b.moveToNext()){int cid=getOrCreateCompany(s,b.getString(1));s.execSQL("UPDATE company_bookings SET company_id=?,company=? WHERE id=?",new Object[]{cid,companyName(s,cid),b.getInt(0)});}b.close();
+                Cursor u=s.rawQuery("SELECT id,company FROM customer_bookings",null);while(u.moveToNext()){String n=u.getString(1);int cid=getOrCreateCompany(s,(n==null||n.trim().isEmpty())?"Legacy / Unassigned":n);s.execSQL("UPDATE customer_bookings SET company_id=?,company=? WHERE id=?",new Object[]{cid,companyName(s,cid),u.getInt(0)});}u.close();
+                Cursor m=s.rawQuery("SELECT id,kind,qty,unit_cost,date,ref FROM steel_moves ORDER BY id",null);
+                while(m.moveToNext()){
+                    int mid=m.getInt(0),cid=legacy;String kind=m.getString(1),ref=m.getString(5);
+                    if(ref!=null&&ref.startsWith("Company booking #")){int bid=parseId(ref);Cursor x=s.rawQuery("SELECT company_id FROM company_bookings WHERE id=?",new String[]{String.valueOf(bid)});if(x.moveToFirst()&&x.getInt(0)>0)cid=x.getInt(0);x.close();}
+                    else if(ref!=null&&ref.startsWith("Customer booking #")){int bid=parseId(ref);Cursor x=s.rawQuery("SELECT company_id FROM customer_bookings WHERE id=?",new String[]{String.valueOf(bid)});if(x.moveToFirst()&&x.getInt(0)>0)cid=x.getInt(0);x.close();}
+                    s.execSQL("INSERT INTO company_stock_moves(company_id,kind,qty,unit_cost,date,ref) VALUES(?,?,?,?,?,?)",new Object[]{cid,kind,m.getDouble(2),m.getDouble(3),m.getString(4),ref==null?"Legacy movement #"+mid:ref});
+                }m.close();
+                s.execSQL("CREATE INDEX IF NOT EXISTS idx_company_stock_date ON company_stock_moves(date)");
+            }
         }
-        double steelQty(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty ELSE -qty END),0) FROM steel_moves",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
-        double steelValue(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty*unit_cost ELSE -qty*unit_cost END),0) FROM steel_moves",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        private boolean hasColumn(SQLiteDatabase s,String table,String column){Cursor c=s.rawQuery("PRAGMA table_info("+table+")",null);try{while(c.moveToNext())if(column.equalsIgnoreCase(c.getString(1)))return true;return false;}finally{c.close();}}
+        String normalizeName(String n){return n==null?"":n.trim().replaceAll("\\s+"," ");}
+        int getOrCreateCompany(SQLiteDatabase s,String name){String norm=normalizeName(name);if(norm.isEmpty())norm="Legacy / Unassigned";Cursor c=s.rawQuery("SELECT id,name FROM companies ORDER BY id",null);while(c.moveToNext()){if(normalizeName(c.getString(1)).equalsIgnoreCase(norm)){int id=c.getInt(0);c.close();return id;}}c.close();s.execSQL("INSERT OR IGNORE INTO companies(name) VALUES(?)",new Object[]{norm});Cursor x=s.rawQuery("SELECT id FROM companies WHERE name=? COLLATE NOCASE",new String[]{norm});int id=x.moveToFirst()?x.getInt(0):1;x.close();return id;}
+        int getOrCreateCompany(String name){SQLiteDatabase s=getWritableDatabase();return getOrCreateCompany(s,name);}
+        String companyName(SQLiteDatabase s,int id){Cursor c=s.rawQuery("SELECT name FROM companies WHERE id=?",new String[]{String.valueOf(id)});String n=c.moveToFirst()?c.getString(0):"Legacy / Unassigned";c.close();return n;}
+        String companyName(int id){return companyName(getReadableDatabase(),id);}
+        String[] companyNames(){ArrayList<String>a=new ArrayList<>();Cursor c=getReadableDatabase().rawQuery("SELECT name FROM companies ORDER BY name COLLATE NOCASE",null);while(c.moveToNext())a.add(c.getString(0));c.close();return a.toArray(new String[0]);}
+        double cementStock(String type){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='SALE' THEN -qty ELSE qty END),0) FROM cement_moves WHERE type=?",new String[]{type});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double cementStockAt(String type,String date){String start=cementStartDate();if(start.isEmpty()||date.compareTo(start)<0)return 0;Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='SALE' THEN -qty ELSE qty END),0) FROM cement_moves WHERE type=? AND date>=? AND date<=?",new String[]{type,start,date});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double cementStockAtExcluding(String type,String date,int excludeId){String start=cementStartDate();if(start.isEmpty()||date.compareTo(start)<0)return 0;Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='SALE' THEN -qty ELSE qty END),0) FROM cement_moves WHERE type=? AND date>=? AND date<=? AND id<>?",new String[]{type,start,date,String.valueOf(excludeId)});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        String cementOpeningDate(){Cursor c=getReadableDatabase().rawQuery("SELECT MIN(date) FROM cement_moves WHERE kind='OPENING'",null);String d=c.moveToFirst()?c.getString(0):null;c.close();return d==null?"":d;}
+        String cementEarliestMovementDate(){Cursor c=getReadableDatabase().rawQuery("SELECT MIN(date) FROM cement_moves",null);String d=c.moveToFirst()?c.getString(0):null;c.close();return d==null?"":d;}
+        String cementStartDate(){String d=cementOpeningDate();return d.isEmpty()?cementEarliestMovementDate():d;}
+        boolean hasOpening(String type,int excludeId){Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*) FROM cement_moves WHERE type=? AND kind='OPENING' AND id<>?",new String[]{type,String.valueOf(excludeId)});boolean found=c.moveToFirst()&&c.getInt(0)>0;c.close();return found;}
+        double cementPeriodQty(String type,String kind,String from,String to){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty),0) FROM cement_moves WHERE type=? AND kind=? AND date>=? AND date<=?",new String[]{type,kind,from,to});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double cementOpeningForPeriod(String type,String from,String recordStart){
+            if(from.equals(recordStart)){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty),0) FROM cement_moves WHERE type=? AND kind='OPENING' AND date=?",new String[]{type,recordStart});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+            Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='SALE' THEN -qty ELSE qty END),0) FROM cement_moves WHERE type=? AND date>=? AND date<?",new String[]{type,recordStart,from});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;
+        }
+        double companyQty(int id){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty ELSE -qty END),0) FROM company_stock_moves WHERE company_id=?",new String[]{String.valueOf(id)});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double companyValue(int id){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty*unit_cost ELSE -qty*unit_cost END),0) FROM company_stock_moves WHERE company_id=?",new String[]{String.valueOf(id)});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double companyAvgCost(int id){double q=companyQty(id);return q>0?Math.max(0,companyValue(id)/q):0;}
+        double steelQty(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty ELSE -qty END),0) FROM company_stock_moves",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double steelValue(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(CASE WHEN kind='RECEIPT' THEN qty*unit_cost ELSE -qty*unit_cost END),0) FROM company_stock_moves",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
         double steelAvgCost(){double q=steelQty();return q>0?Math.max(0,steelValue()/q):0;}
         double companyPending(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty-dispatched),0) FROM company_bookings",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
         double customerPending(){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty-delivered),0) FROM customer_bookings",null);double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
+        double customerPending(int cid){Cursor c=getReadableDatabase().rawQuery("SELECT COALESCE(SUM(qty-delivered),0) FROM customer_bookings WHERE company_id=?",new String[]{String.valueOf(cid)});double x=c.moveToFirst()?c.getDouble(0):0;c.close();return x;}
     }
 
-    private void heading(String s){TextView t=text(s,23,ink,true);t.setPadding(dp(2),dp(3),0,dp(10));content.addView(t);}
-    private void section(String s){TextView t=text(s,16,ink,true);t.setPadding(0,dp(17),0,dp(7));content.addView(t);}
+    private void heading(String s){TextView t=text(s,27,ink,true);t.setPadding(dp(2),dp(3),0,dp(10));content.addView(t);}
+    private void section(String s){TextView t=text(s,18,ink,true);t.setPadding(0,dp(17),0,dp(7));content.addView(t);}
     private void card(String title,String value,String detail){
-        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(14),dp(12),dp(14),dp(12));box.setBackground(roundRect(Color.WHITE,dp(16),dp(1),Color.rgb(232,237,243),dp(16)));
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(14),dp(12),dp(14),dp(12));box.setBackground(roundRect(surface,dp(16),dp(1),outline,dp(16)));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(8);box.setLayoutParams(lp);
-        box.addView(text(title,14,Color.DKGRAY,true));box.addView(text(value,20,ink,true));box.addView(text(detail,12,Color.GRAY,false));content.addView(box);
+        box.addView(text(title,14,secondaryText,true));box.addView(text(value,20,ink,true));if(detail!=null&&!detail.isEmpty())box.addView(text(detail,12,secondaryText,false));content.addView(box);
     }
     private void row(String title,String value,String detail){
-        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(10),dp(12),dp(10));box.setBackground(roundRect(Color.WHITE,dp(16),dp(1),Color.rgb(232,237,243),dp(16)));
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(12),dp(10),dp(12),dp(10));box.setBackground(roundRect(surface,dp(16),dp(1),outline,dp(16)));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(5);box.setLayoutParams(lp);
         LinearLayout line=new LinearLayout(this);line.setOrientation(LinearLayout.HORIZONTAL);
         TextView a=text(title,14,ink,true),b=text(value,14,blue,true);line.addView(a,new LinearLayout.LayoutParams(0,-2,1));line.addView(b);
-        box.addView(line);if(detail!=null&&!detail.isEmpty())box.addView(text(detail,12,Color.GRAY,false));content.addView(box);
+        box.addView(line);if(detail!=null&&!detail.isEmpty())box.addView(text(detail,12,secondaryText,false));content.addView(box);
     }
-    private void empty(String s){TextView t=text(s,13,Color.GRAY,false);t.setPadding(dp(5),dp(8),dp(5),dp(8));content.addView(t);}
-    private Button button(String s,int color){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextColor(Color.WHITE);b.setTextSize(14);b.setTypeface(null,Typeface.BOLD);b.setPadding(dp(14),0,dp(14),0);b.setBackground(roundRect(color,dp(14),0,color,dp(14)));if(android.os.Build.VERSION.SDK_INT>=21)b.setStateListAnimator(null);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(50));lp.bottomMargin=dp(8);b.setLayoutParams(lp);return b;}
+    private void empty(String s){TextView t=text(s,13,secondaryText,false);t.setPadding(dp(5),dp(8),dp(5),dp(8));content.addView(t);}
+    private Button button(String s,int color){Button b=new Button(this);b.setText(s);b.setAllCaps(false);b.setTextColor(ink);b.setTextSize(14);b.setTypeface(null,Typeface.BOLD);b.setPadding(dp(14),0,dp(14),0);b.setBackground(roundRect(color,dp(14),0,color,dp(14)));if(android.os.Build.VERSION.SDK_INT>=21)b.setStateListAnimator(null);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(50));lp.bottomMargin=dp(8);b.setLayoutParams(lp);return b;}
     private GradientDrawable roundRect(int color,int radius,int strokeWidth,int strokeColor,int allRadius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(Math.max(radius,allRadius));if(strokeWidth>0)d.setStroke(strokeWidth,strokeColor);return d;}
-    private TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
+    private TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_SIMPLE);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
     private LinearLayout form(){LinearLayout f=new LinearLayout(this);f.setOrientation(LinearLayout.VERTICAL);f.setPadding(dp(18),dp(6),dp(18),0);return f;}
-    private EditText input(String hint){EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(16);e.setHint(hint);return e;}
-    private Spinner spinner(String[] values){Spinner s=new Spinner(this);ArrayAdapter<String>a=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,values);s.setAdapter(a);return s;}
+    private EditText input(String hint){EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(16);e.setTextColor(ink);e.setHintTextColor(secondaryText);e.setBackgroundTintList(android.content.res.ColorStateList.valueOf(blue));e.setHint(hint);return e;}
+    private Spinner spinner(String[] values){Spinner s=new Spinner(this);ArrayAdapter<String>a=new ArrayAdapter<String>(this,android.R.layout.simple_spinner_item,values){@Override public View getView(int position,View convertView,android.view.ViewGroup parent){TextView v=(TextView)super.getView(position,convertView,parent);v.setTextColor(ink);return v;}};a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);s.setAdapter(a);return s;}
     private TextView label(String s){TextView t=text(s,13,ink,true);t.setPadding(0,dp(7),0,0);return t;}
     private void addField(LinearLayout f,String name,View v){f.addView(label(name));f.addView(v);}
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
     private double parse(String s){try{return Double.parseDouble(s.trim().replace(",",""));}catch(Exception e){return -1;}}
+    private EditText dateInput(String initial, boolean optional) {
+        EditText field = input(optional ? "Tap to select date (optional)" : "Tap to select date");
+        field.setFocusable(false);
+        field.setClickable(true);
+        if (initial != null && !initial.trim().isEmpty()) field.setText(initial);
+
+        field.setOnClickListener(v -> {
+            Calendar cal = Calendar.getInstance();
+            String current = field.getText().toString().trim();
+            if (validDate(current)) {
+                try {
+                    Date parsed = new SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(current);
+                    if (parsed != null) cal.setTime(parsed);
+                } catch (Exception ignored) {}
+            }
+
+            DatePickerDialog picker = new DatePickerDialog(
+                MainActivity.this,
+                (view, year, month, day) -> {
+                    Calendar chosen = Calendar.getInstance();
+                    chosen.set(year, month, day);
+                    field.setText(new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(chosen.getTime()));
+                },
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH),
+                cal.get(Calendar.DAY_OF_MONTH)
+            );
+            picker.setButton(DatePickerDialog.BUTTON_NEUTRAL, "Today", (dialog, which) ->
+                field.setText(today())
+            );
+            picker.show();
+        });
+
+        if (optional) {
+            field.setOnLongClickListener(v -> {
+                field.setText("");
+                toast("Date cleared.");
+                return true;
+            });
+        }
+        return field;
+    }
+
     private String today(){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());}
-    private boolean validDate(String s){return s.matches("\\d{4}-\\d{2}-\\d{2}");}
+    private boolean validDate(String s){
+        if(s==null || !s.matches("\\d{4}-\\d{2}-\\d{2}")) return false;
+        SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.US);
+        f.setLenient(false);
+        try {
+            Date parsed=f.parse(s);
+            return parsed!=null && f.format(parsed).equals(s);
+        } catch(Exception e) {
+            return false;
+        }
+    }
     private String money(double n){return "₹"+String.format(Locale.US,"%,.2f",n);}
     private String fmt(double n){return String.format(Locale.US,"%,.0f",n);}
     private String qtyText(double t){return String.format(Locale.US,"%.3f t  (%s kg)",t,fmt(t*1000));}

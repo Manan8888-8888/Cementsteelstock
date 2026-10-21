@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.manan.stockmanager.app-mergeDebugResources-23:/values-v23/values-v23.xml",
+            "map": [
+                {
+                    "source": "/home/codespace/.gradle/caches/9.7.1/transforms/e4f895c70dd238aa4e84ba337ca21fb0/transformed/work-runtime-2.9.1/res/values-v23/values-v23.xml",
+                    "from": {
+                        "startLines": "2,3",
+                        "startColumns": "4,4",
+                        "startOffsets": "55,121",
+                        "endColumns": "65,62",
+                        "endOffsets": "116,179"
+                    }
+                }
+            ]
+        }
+    ]
+}

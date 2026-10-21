@@ -44,31 +44,97 @@ public final class DriveBackupManager {
 
     public static void download(Context context, String email) throws Exception {
         Drive drive = service(context, email);
-        FileList found = drive.files().list().setQ("name='" + BACKUP_NAME + "' and trashed=false")
+        FileList found = drive.files().list()
+                .setQ("name='" + BACKUP_NAME + "' and trashed=false")
                 .setSpaces("drive").setOrderBy("modifiedTime desc")
                 .setFields("files(id,name,modifiedTime,size)").setPageSize(100).execute();
+
         if (found.getFiles() == null || found.getFiles().isEmpty())
             throw new FileNotFoundException("No ShyamCo_Backup.db was found in this Google Drive account.");
+
         com.google.api.services.drive.model.File remote = found.getFiles().get(0);
-        java.io.File temp = new java.io.File(context.getCacheDir(), "drive-restore-check.db");
-        try (OutputStream out = new FileOutputStream(temp)) {
-            drive.files().get(remote.getId()).executeMediaAndDownloadTo(out);
+        java.io.File downloaded = new java.io.File(context.getCacheDir(), "drive-restore-download.tmp");
+        try {
+            try (OutputStream out = new FileOutputStream(downloaded)) {
+                drive.files().get(remote.getId()).executeMediaAndDownloadTo(out);
+                out.flush();
+            }
+            if (!downloaded.isFile() || downloaded.length() == 0)
+                throw new IOException("The downloaded backup is empty.");
+
+            validateDatabase(downloaded);
+
+            java.io.File destination = context.getDatabasePath("stock_manager.db");
+            java.io.File parent = destination.getParentFile();
+            if (parent == null || (!parent.exists() && !parent.mkdirs()))
+                throw new IOException("Cannot access the database directory.");
+
+            // Prepare and validate a replacement in the same directory as the database.
+            java.io.File replacement = new java.io.File(parent, "stock_manager.restore.tmp");
+            java.io.File previous = new java.io.File(parent, "stock_manager.previous.tmp");
+            if (replacement.exists() && !replacement.delete())
+                throw new IOException("Cannot clear the temporary restore file.");
+            copy(downloaded, replacement);
+            validateDatabase(replacement);
+
+            // Keep a separate safety copy before touching the current database.
+            java.io.File safety = new java.io.File(context.getFilesDir(), "pre_drive_restore_backup.db");
+            if (destination.exists()) {
+                copy(destination, safety);
+                validateDatabase(safety);
+            }
+
+            java.io.File wal = new java.io.File(destination.getAbsolutePath() + "-wal");
+            java.io.File shm = new java.io.File(destination.getAbsolutePath() + "-shm");
+            if (wal.exists() && !wal.delete())
+                throw new IOException("Could not clear the old database WAL before restore.");
+            if (shm.exists() && !shm.delete())
+                throw new IOException("Could not clear the old database SHM before restore.");
+
+            if (previous.exists() && !previous.delete())
+                throw new IOException("Cannot clear the previous temporary database.");
+            boolean movedOld = false;
+            if (destination.exists()) {
+                if (!destination.renameTo(previous))
+                    throw new IOException("Could not safely move the current database aside.");
+                movedOld = true;
+            }
+
+            if (!replacement.renameTo(destination)) {
+                if (movedOld) previous.renameTo(destination);
+                throw new IOException("Could not install the restored database; the previous database was preserved where possible.");
+            }
+            validateDatabase(destination);
+            if (previous.exists()) previous.delete();
+        } finally {
+            if (downloaded.exists()) downloaded.delete();
         }
-        SQLiteDatabase check = SQLiteDatabase.openDatabase(temp.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
-        try (android.database.Cursor c = check.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('cement_moves','company_bookings','customer_bookings','steel_moves')", null)) {
-            int count=0; while(c.moveToNext()) count++;
-            if(count < 4) throw new IOException("The Drive file is not a valid Shyam Co. database backup.");
-        } finally { check.close(); }
-        java.io.File destination = context.getDatabasePath("stock_manager.db");
-        java.io.File safety = new java.io.File(context.getFilesDir(), "pre_drive_restore_backup.db");
-        if(destination.exists()) copy(destination, safety);
-        // Remove SQLite sidecar files so an old WAL cannot be replayed onto the restored database.
-        java.io.File wal = new java.io.File(destination.getAbsolutePath() + "-wal");
-        java.io.File shm = new java.io.File(destination.getAbsolutePath() + "-shm");
-        if (wal.exists() && !wal.delete()) throw new IOException("Could not clear old database WAL before restore.");
-        if (shm.exists() && !shm.delete()) throw new IOException("Could not clear old database SHM before restore.");
-        copy(temp, destination);
-        temp.delete();
+    }
+
+    private static void validateDatabase(java.io.File file) throws IOException {
+        SQLiteDatabase check = null;
+        try {
+            check = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            try (android.database.Cursor integrity = check.rawQuery("PRAGMA integrity_check", null)) {
+                if (!integrity.moveToFirst() || !"ok".equalsIgnoreCase(integrity.getString(0)))
+                    throw new IOException("SQLite integrity check failed.");
+            }
+            try (android.database.Cursor tables = check.rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN " +
+                    "('cement_moves','company_bookings','customer_bookings','steel_moves')", null)) {
+                int count = 0;
+                while (tables.moveToNext()) count++;
+                if (count < 4)
+                    throw new IOException("The file is not a complete Shyam Co. database backup.");
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("The backup database could not be validated.", e);
+        } finally {
+            if (check != null) check.close();
+        }
     }
 
     private static void copy(java.io.File from, java.io.File to) throws IOException {

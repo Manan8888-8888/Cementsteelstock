@@ -27,9 +27,42 @@ public class DailyLocalBackupWorker extends Worker {
                 byte[] b=new byte[8192]; int n; while((n=in.read(b))>0) out.write(b,0,n); out.getFD().sync();
             }
             if(temp.length()==0) throw new IOException("Empty backup");
-            if(target.exists() && !target.delete()) throw new IOException("Cannot replace previous local backup");
-            if(!temp.renameTo(target)) throw new IOException("Cannot finalize backup");
+
+            // Validate the temporary copy before replacing the last known-good backup.
+            SQLiteDatabase check = SQLiteDatabase.openDatabase(
+                    temp.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            try {
+                try(android.database.Cursor integrity=check.rawQuery("PRAGMA integrity_check",null)) {
+                    if(!integrity.moveToFirst() || !"ok".equalsIgnoreCase(integrity.getString(0)))
+                        throw new IOException("Backup integrity check failed");
+                }
+                try(android.database.Cursor tables=check.rawQuery(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name IN " +
+                        "('cement_moves','company_bookings','customer_bookings','steel_moves')",null)) {
+                    int count=0; while(tables.moveToNext()) count++;
+                    if(count<4) throw new IOException("Backup is missing required tables");
+                }
+            } finally { check.close(); }
+
+            File previous=new File(dir,"ShyamCo_previous.tmp");
+            if(previous.exists() && !previous.delete())
+                throw new IOException("Cannot clear temporary previous-backup file");
+
+            boolean movedOld=false;
+            if(target.exists()) {
+                if(!target.renameTo(previous))
+                    throw new IOException("Cannot safely move previous backup aside");
+                movedOld=true;
+            }
+            if(!temp.renameTo(target)) {
+                if(movedOld) previous.renameTo(target);
+                throw new IOException("Cannot finalize backup; previous backup was preserved where possible");
+            }
+            if(previous.exists()) previous.delete();
             return Result.success();
-        } catch(Exception e) { if(temp.exists()) temp.delete(); return Result.retry(); }
+        } catch(Exception e) {
+            if(temp.exists()) temp.delete();
+            return Result.retry();
+        }
     }
 }
